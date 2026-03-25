@@ -11,6 +11,7 @@ const shared = {
 };
 
 const configs = [
+  { ...shared, entryPoints: ["src/inject.ts"], outfile: "dist/inject.js" },
   { ...shared, entryPoints: ["src/content.ts"], outfile: "dist/content.js" },
   { ...shared, entryPoints: ["src/background.ts"], outfile: "dist/background.js" },
   { ...shared, entryPoints: ["src/popup.ts"], outfile: "dist/popup.js" },

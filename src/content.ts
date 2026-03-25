@@ -1,79 +1,66 @@
-import { extractTranscript, getVideoId } from "./transcript";
 import { SubtitleOverlay } from "./overlay";
 import { getCached, setCached } from "./cache";
-import type { ExtensionMessage, TranscriptSegment, Settings, DEFAULT_SETTINGS } from "./types";
+import type { ExtensionMessage, TranscriptSegment, Settings } from "./types";
 
 /**
- * Content script: YouTube 페이지에 주입되어 동작한다.
+ * Content script (ISOLATED world).
  *
- * 역할:
- * 1. 영상 변경 감지 → transcript 추출
- * 2. background에 transcript 전달
- * 3. 번역 결과 수신 → overlay 업데이트
- * 4. 캐시 히트 시 즉시 overlay 표시
+ * Transcript 추출은 inject.ts (MAIN world)가 담당.
+ * 이 스크립트는 CustomEvent로 데이터를 받아서 overlay + background 통신.
  */
+
+const LOG = "[AI Subtitle]";
 
 let overlay: SubtitleOverlay | null = null;
 let currentVideoId: string | null = null;
 let segments: TranscriptSegment[] = [];
 
-/** YouTube SPA 네비게이션을 감지한다. */
-function observeNavigation(callback: () => void): void {
-  // YouTube는 History API로 네비게이션하므로 yt-navigate-finish 이벤트를 감시
-  document.addEventListener("yt-navigate-finish", callback);
+/** inject.ts에서 보낸 transcript 데이터 수신. */
+window.addEventListener("__AI_SUBTITLE__", async (event: Event) => {
+  const { videoId, segments: extracted } = (event as CustomEvent).detail as {
+    videoId: string;
+    segments: TranscriptSegment[];
+  };
 
-  // 초기 로드
-  callback();
-}
+  console.log(`${LOG} Received ${extracted.length} segments for ${videoId}`);
 
-/** 현재 영상에 대해 transcript를 추출하고 번역을 시작한다. */
-async function onVideoChange(): Promise<void> {
-  const videoId = getVideoId();
-  if (!videoId || videoId === currentVideoId) return;
+  if (!videoId || extracted.length === 0) {
+    console.warn(`${LOG} No transcript for ${videoId}`);
+    return;
+  }
 
   currentVideoId = videoId;
-  segments = [];
+  segments = extracted;
 
-  // overlay 마운트 (영상 로드 대기)
+  // overlay 마운트
   await waitForPlayer();
-
   if (!overlay) {
     overlay = new SubtitleOverlay();
   }
   overlay.mount();
 
-  // 설정 로드
   const settings = await loadSettings();
   overlay.configure(settings);
 
   // 캐시 확인
   const cached = await getCached(videoId, settings.targetLang);
   if (cached) {
+    console.log(`${LOG} Cache hit for ${videoId}`);
     segments = cached;
     overlay.setSegments(segments);
-    notifyBackground({ type: "STATUS_UPDATE", status: "connected" });
     return;
   }
 
-  // transcript 추출
-  const extracted = await extractTranscript();
-  if (!extracted?.length) {
-    console.warn("[MASC Subtitle] No transcript available for", videoId);
-    return;
-  }
-
-  segments = extracted;
   overlay.setSegments(segments);
 
-  // background에 transcript 전달 → 번역 시작
+  // background에 번역 요청
   notifyBackground({
     type: "TRANSCRIPT_READY",
     videoId,
     segments: extracted,
   });
-}
+});
 
-/** YouTube player가 DOM에 로드될 때까지 대기한다. */
 function waitForPlayer(): Promise<void> {
   return new Promise((resolve) => {
     const check = (): void => {
@@ -87,14 +74,10 @@ function waitForPlayer(): Promise<void> {
   });
 }
 
-/** Background service worker에 메시지를 보낸다. */
 function notifyBackground(message: ExtensionMessage): void {
-  chrome.runtime.sendMessage(message).catch(() => {
-    // background가 아직 준비되지 않았을 수 있음
-  });
+  chrome.runtime.sendMessage(message).catch(() => {});
 }
 
-/** chrome.storage에서 설정을 로드한다. */
 async function loadSettings(): Promise<Settings> {
   const defaults: Settings = {
     agentUrl: "http://127.0.0.1:8085",
@@ -113,7 +96,7 @@ async function loadSettings(): Promise<Settings> {
   });
 }
 
-/** Background에서 오는 번역 결과를 수신한다. */
+/** Background에서 오는 번역 결과 수신. */
 chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
   if (message.type === "TRANSLATION_UPDATE" && message.videoId === currentVideoId) {
     for (const seg of message.segments) {
@@ -126,14 +109,8 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
   }
 
   if (message.type === "TRANSLATION_COMPLETE" && message.videoId === currentVideoId) {
-    // 번역 완료 → 캐시 저장
     loadSettings().then((settings) => {
       setCached(currentVideoId!, settings.targetLang, segments).catch(console.error);
     });
   }
-});
-
-// 시작
-observeNavigation(() => {
-  onVideoChange().catch(console.error);
 });

@@ -18,6 +18,12 @@
   "content_scripts": [
     {
       "matches": ["https://www.youtube.com/watch*", "https://youtube.com/watch*"],
+      "js": ["dist/inject.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.youtube.com/watch*", "https://youtube.com/watch*"],
       "js": ["dist/content.js"],
       "css": ["styles/overlay.css"],
       "run_at": "document_idle"
