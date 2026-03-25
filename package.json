@@ -1,8 +1,8 @@
 {
-  "name": "masc-subtitle-ext",
+  "name": "agent-subtitle-ext",
   "version": "0.1.0",
   "private": true,
-  "description": "YouTube AI subtitle translator powered by MASC keeper agents",
+  "description": "YouTube AI subtitle translator via any OpenAI-compatible agent",
   "scripts": {
     "build": "node esbuild.config.mjs",
     "watch": "node esbuild.config.mjs --watch",
