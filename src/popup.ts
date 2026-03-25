@@ -1,18 +1,5 @@
+import { DEFAULT_SETTINGS } from "./types";
 import type { Settings, ConnectionStatus, DebugEntry } from "./types";
-
-/**
- * Popup UI: 설정 + 상태 + debug log.
- */
-
-const DEFAULT_SETTINGS: Settings = {
-  agentUrl: "http://127.0.0.1:8085",
-  apiKey: "",
-  model: "auto",
-  targetLang: "ko",
-  showDualSubtitles: true,
-  fontSize: 18,
-  overlayPosition: "bottom",
-};
 
 function $(id: string): HTMLElement | null {
   return document.getElementById(id);
@@ -109,6 +96,10 @@ function refreshDebugLog(): void {
 // --- Init ---
 
 async function init(): Promise<void> {
+  // 버전을 manifest에서 동적 로드
+  const versionEl = $("version");
+  if (versionEl) versionEl.textContent = `v${chrome.runtime.getManifest().version}`;
+
   const settings = await loadSettings();
 
   const wsUrlInput = $("ws-url") as HTMLInputElement | null;

@@ -1,6 +1,7 @@
 import { SubtitleOverlay } from "./overlay";
 import { getCached, setCached } from "./cache";
 import { mergeIntoSentences } from "./sentence-merger";
+import { DEFAULT_SETTINGS } from "./types";
 import type { ExtensionMessage, TranscriptSegment, Settings } from "./types";
 
 /**
@@ -95,18 +96,8 @@ function waitForPlayer(): Promise<void> {
 }
 
 async function loadSettings(): Promise<Settings> {
-  const defaults: Settings = {
-    agentUrl: "http://127.0.0.1:8085",
-    apiKey: "",
-    model: "auto",
-    targetLang: "ko",
-    showDualSubtitles: true,
-    fontSize: 18,
-    overlayPosition: "bottom",
-  };
-
   return new Promise((resolve) => {
-    chrome.storage.local.get(defaults, (result) => {
+    chrome.storage.local.get(DEFAULT_SETTINGS, (result) => {
       resolve(result as Settings);
     });
   });
