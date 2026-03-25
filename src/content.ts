@@ -114,3 +114,23 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
     });
   }
 });
+
+/** 설정 변경 시 현재 영상 재번역. */
+chrome.storage.onChanged.addListener((changes) => {
+  if (!changes["targetLang"] || !currentVideoId || segments.length === 0) return;
+
+  console.log(`${LOG} Language changed to ${changes["targetLang"].newValue}, re-translating...`);
+
+  // 기존 번역 제거
+  for (const seg of segments) {
+    seg.translated = undefined;
+  }
+  overlay?.setSegments(segments);
+
+  // 재번역 요청
+  notifyBackground({
+    type: "TRANSCRIPT_READY",
+    videoId: currentVideoId,
+    segments,
+  });
+});
