@@ -1,13 +1,12 @@
 import type { TranscriptSegment } from "./types";
 
 /**
- * YouTube Innertube API를 통해 transcript를 추출한다.
- * JSON3 format으로 밀리초 정밀도 타이밍 데이터를 반환한다.
+ * YouTube transcript 추출.
  *
- * Flow:
- * 1. ytInitialPlayerResponse에서 captionTracks 추출
- * 2. baseUrl + fmt=json3 으로 실제 transcript fetch
- * 3. events → TranscriptSegment[] 변환
+ * 3단계 fallback:
+ * 1. player.getPlayerResponse() (SPA 내비게이션 후 가장 안정적)
+ * 2. ytInitialPlayerResponse (초기 페이지 로드 시)
+ * 3. YouTube timedtext XML API (위 둘 다 실패 시)
  */
 
 interface CaptionTrack {
@@ -23,12 +22,35 @@ interface Json3Event {
   segs?: { utf8?: string }[];
 }
 
-/**
- * 현재 YouTube 페이지에서 사용 가능한 caption track 목록을 가져온다.
- * ytInitialPlayerResponse를 DOM에서 파싱하거나, Innertube API를 호출한다.
- */
-export function getCaptionTracks(): CaptionTrack[] {
-  // ytInitialPlayerResponse는 YouTube 페이지 로드 시 DOM에 삽입된다.
+const LOG = "[AI Subtitle]";
+
+/** player element에서 caption tracks를 추출한다 (SPA 안전). */
+function getTracksFromPlayer(): CaptionTrack[] {
+  try {
+    const player = document.querySelector("#movie_player") as HTMLElement & {
+      getPlayerResponse?: () => {
+        captions?: {
+          playerCaptionsTracklistRenderer?: {
+            captionTracks?: CaptionTrack[];
+          };
+        };
+      };
+    };
+
+    const resp = player?.getPlayerResponse?.();
+    const tracks = resp?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    if (tracks?.length) {
+      console.log(`${LOG} Found ${tracks.length} tracks via getPlayerResponse`);
+      return tracks;
+    }
+  } catch {
+    // not available
+  }
+  return [];
+}
+
+/** DOM script tags에서 ytInitialPlayerResponse를 파싱한다. */
+function getTracksFromInitialData(): CaptionTrack[] {
   const scripts = document.querySelectorAll("script");
   for (const script of scripts) {
     const text = script.textContent;
@@ -47,61 +69,106 @@ export function getCaptionTracks(): CaptionTrack[] {
           };
         };
       };
-      return data.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
+      const tracks = data.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (tracks?.length) {
+        console.log(`${LOG} Found ${tracks.length} tracks via ytInitialPlayerResponse`);
+        return tracks;
+      }
     } catch {
       continue;
     }
   }
-
-  // SPA 내비게이션 후에는 window.ytInitialPlayerResponse가 없을 수 있다.
-  // ytplayer.config.args에서 시도.
-  try {
-    const playerResponse = (
-      document.querySelector("#movie_player") as HTMLElement & {
-        getPlayerResponse?: () => {
-          captions?: {
-            playerCaptionsTracklistRenderer?: {
-              captionTracks?: CaptionTrack[];
-            };
-          };
-        };
-      }
-    )?.getPlayerResponse?.();
-
-    if (playerResponse) {
-      return (
-        playerResponse.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? []
-      );
-    }
-  } catch {
-    // getPlayerResponse not available
-  }
-
   return [];
 }
 
-/**
- * caption track의 baseUrl로 JSON3 transcript를 fetch한다.
- */
+/** caption tracks를 가져온다. player 우선, 초기 데이터 fallback. */
+export function getCaptionTracks(): CaptionTrack[] {
+  return getTracksFromPlayer().length > 0
+    ? getTracksFromPlayer()
+    : getTracksFromInitialData();
+}
+
+/** JSON3 transcript를 fetch한다. 빈 응답/파싱 실패 시 빈 배열 반환. */
 async function fetchJson3Transcript(
   baseUrl: string
 ): Promise<Json3Event[]> {
   const url = new URL(baseUrl);
   url.searchParams.set("fmt", "json3");
 
+  console.log(`${LOG} Fetching transcript: ${url.hostname}${url.pathname}`);
+
   const response = await fetch(url.toString());
   if (!response.ok) {
-    throw new Error(`Transcript fetch failed: ${response.status}`);
+    console.warn(`${LOG} Transcript fetch failed: ${response.status}`);
+    return [];
   }
 
-  const data = (await response.json()) as { events?: Json3Event[] };
-  return data.events ?? [];
+  const text = await response.text();
+  if (!text || text.length < 10) {
+    console.warn(`${LOG} Transcript response empty`);
+    return [];
+  }
+
+  try {
+    const data = JSON.parse(text) as { events?: Json3Event[] };
+    console.log(`${LOG} Parsed ${data.events?.length ?? 0} events`);
+    return data.events ?? [];
+  } catch {
+    console.warn(`${LOG} Transcript JSON parse failed, trying XML fallback`);
+    return [];
+  }
 }
 
-/**
- * JSON3 events를 TranscriptSegment[]로 변환한다.
- * 빈 segment, 메타데이터 event를 필터링한다.
- */
+/** XML 형식 transcript를 fallback으로 fetch한다. */
+async function fetchXmlTranscript(
+  baseUrl: string
+): Promise<TranscriptSegment[]> {
+  // fmt 파라미터 없이 호출하면 XML 반환
+  const url = new URL(baseUrl);
+  url.searchParams.delete("fmt");
+
+  console.log(`${LOG} Trying XML transcript fallback`);
+
+  const response = await fetch(url.toString());
+  if (!response.ok) return [];
+
+  const xml = await response.text();
+  if (!xml || !xml.includes("<text")) return [];
+
+  const segments: TranscriptSegment[] = [];
+  // <text start="1.54" dur="4.16">text here</text>
+  const regex = /<text\s+start="([\d.]+)"\s+dur="([\d.]+)"[^>]*>(.*?)<\/text>/gs;
+  let match: RegExpExecArray | null;
+  let index = 0;
+
+  while ((match = regex.exec(xml)) !== null) {
+    const startSec = parseFloat(match[1] ?? "0");
+    const durSec = parseFloat(match[2] ?? "0");
+    const rawText = match[3] ?? "";
+    // HTML entity decode
+    const text = rawText
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .trim();
+
+    if (!text) continue;
+
+    segments.push({
+      index,
+      start_ms: Math.round(startSec * 1000),
+      duration_ms: Math.round(durSec * 1000),
+      text,
+    });
+    index++;
+  }
+
+  console.log(`${LOG} XML fallback: ${segments.length} segments`);
+  return segments;
+}
+
 function eventsToSegments(events: Json3Event[]): TranscriptSegment[] {
   const segments: TranscriptSegment[] = [];
   let index = 0;
@@ -131,32 +198,48 @@ function eventsToSegments(events: Json3Event[]): TranscriptSegment[] {
 
 /**
  * YouTube 영상에서 transcript를 추출한다.
- *
- * @param preferredLang - 선호 언어 코드 (예: "en"). 없으면 첫 번째 track 사용.
- * @returns TranscriptSegment[] 또는 null (자막 없음)
+ * JSON3 → XML fallback 순서로 시도.
  */
 export async function extractTranscript(
   preferredLang?: string
 ): Promise<TranscriptSegment[] | null> {
   const tracks = getCaptionTracks();
-  if (tracks.length === 0) return null;
+  console.log(`${LOG} Caption tracks: ${tracks.length}`, tracks.map(t => `${t.languageCode}${t.kind === "asr" ? "(auto)" : ""}`));
 
-  // 선호 언어 track 찾기. 없으면 ASR(auto-generated) 아닌 것 우선.
-  let track =
+  if (tracks.length === 0) {
+    console.warn(`${LOG} No caption tracks found`);
+    return null;
+  }
+
+  const track =
     tracks.find((t) => t.languageCode === preferredLang && t.kind !== "asr") ??
     tracks.find((t) => t.languageCode === preferredLang) ??
     tracks.find((t) => t.kind !== "asr") ??
     tracks[0];
 
   if (!track) return null;
+  console.log(`${LOG} Using track: ${track.languageCode} (${track.name?.simpleText ?? "unknown"})`);
 
+  // JSON3 시도
   const events = await fetchJson3Transcript(track.baseUrl);
-  return eventsToSegments(events);
+  if (events.length > 0) {
+    const segs = eventsToSegments(events);
+    console.log(`${LOG} Extracted ${segs.length} segments (JSON3)`);
+    return segs.length > 0 ? segs : null;
+  }
+
+  // XML fallback
+  const xmlSegs = await fetchXmlTranscript(track.baseUrl);
+  if (xmlSegs.length > 0) {
+    console.log(`${LOG} Extracted ${xmlSegs.length} segments (XML)`);
+    return xmlSegs;
+  }
+
+  console.warn(`${LOG} All transcript extraction methods failed`);
+  return null;
 }
 
-/**
- * 현재 YouTube 페이지의 video ID를 추출한다.
- */
+/** 현재 YouTube 페이지의 video ID를 추출한다. */
 export function getVideoId(): string | null {
   const params = new URLSearchParams(window.location.search);
   return params.get("v");
