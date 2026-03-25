@@ -4,10 +4,11 @@ import type { ExtensionMessage, Settings, TranscriptSegment } from "./types";
 /**
  * Background service worker (Manifest V3).
  *
- * Smart batch ordering: 현재 재생 위치 → 앞(미래) → 뒤(과거) 순서로 번역.
+ * Smart batch ordering: 현재 재생 위치 -> 앞(미래) -> 뒤(과거) 순서로 번역.
+ * SSE streaming: 줄 단위로 번역 완성 시 즉시 overlay에 전달.
  */
 
-const BATCH_SIZE = 20; // 문장 단위 병합 후이므로 더 큰 batch 가능
+const BATCH_SIZE = 20;
 const CONTEXT_WINDOW = 3;
 
 let client: AgentClient | null = null;
@@ -56,8 +57,7 @@ function sendToTab(tabId: number, message: ExtensionMessage): void {
 /**
  * Segments를 현재 재생 위치 기준으로 batch 단위로 재배열.
  *
- * 순서: 현재 위치 batch → 앞으로(미래) → 처음부터(과거)
- * 사용자가 30분에 있으면 30분부터 번역 시작, 끝까지 간 후 0분부터.
+ * 순서: 현재 위치 batch -> 앞으로(미래) -> 처음부터(과거)
  */
 function reorderBatches(
   segments: TranscriptSegment[],
@@ -66,7 +66,6 @@ function reorderBatches(
   const totalBatches = Math.ceil(segments.length / BATCH_SIZE);
   if (totalBatches === 0) return [];
 
-  // 현재 시간에 해당하는 segment 찾기
   let startSegIdx = 0;
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
@@ -79,7 +78,6 @@ function reorderBatches(
 
   const startBatch = Math.floor(startSegIdx / BATCH_SIZE);
 
-  // startBatch → end, then 0 → startBatch
   const order: number[] = [];
   for (let i = startBatch; i < totalBatches; i++) order.push(i);
   for (let i = 0; i < startBatch; i++) order.push(i);
@@ -103,7 +101,7 @@ async function runBatchTranslation(
   const batchOrder = reorderBatches(segments, currentTimeMs);
   const totalBatches = batchOrder.length;
 
-  console.log(`[Subtitle] ${totalBatches} batches, starting near ${Math.round(currentTimeMs / 1000)}s`);
+  console.log(`[Subtitle] ${totalBatches} batches (stream), starting near ${Math.round(currentTimeMs / 1000)}s`);
 
   for (let step = 0; step < totalBatches; step++) {
     if (translatingVideoId !== videoId) break;
@@ -113,29 +111,58 @@ async function runBatchTranslation(
     const batch = segments.slice(start, start + BATCH_SIZE);
     const contextBefore = translated.slice(-CONTEXT_WINDOW);
 
+    let streamedCount = 0;
+
     try {
-      const result = await agent.translateBatch(
-        videoId, batch, "en", targetLang, contextBefore
+      const result = await agent.translateBatchStream(
+        videoId, batch, "en", targetLang, contextBefore,
+        // onSegment: 줄이 완성될 때마다 즉시 tab에 전달
+        (index, translatedText) => {
+          const original = segments[index];
+          if (original) {
+            original.translated = translatedText;
+          }
+          streamedCount++;
+
+          // 개별 segment를 즉시 전달 (streaming UX)
+          sendToTab(tabId, {
+            type: "TRANSLATION_UPDATE",
+            videoId,
+            segments: [{ index, translated: translatedText }],
+          });
+        }
       );
 
-      for (const seg of result.segments) {
-        const original = segments[seg.index];
-        if (original) {
-          original.translated = seg.translated;
-          translated.push(original);
+      // streaming 콜백에서 이미 처리하지 못한 segment가 있으면 batch로 보냄
+      const unstreamedSegs = result.segments.filter(
+        (seg) => !segments[seg.index]?.translated
+      );
+      if (unstreamedSegs.length > 0) {
+        for (const seg of unstreamedSegs) {
+          const original = segments[seg.index];
+          if (original) original.translated = seg.translated;
         }
+        sendToTab(tabId, {
+          type: "TRANSLATION_UPDATE",
+          videoId,
+          segments: [...unstreamedSegs],
+        });
       }
 
-      sendToTab(tabId, {
-        type: "TRANSLATION_UPDATE",
-        videoId,
-        segments: [...result.segments],
-      });
+      // context window 갱신
+      for (const seg of result.segments) {
+        const original = segments[seg.index];
+        if (original) translated.push(original);
+      }
 
       const tokS = result.elapsed_ms && result.tokens
         ? `${(result.tokens / (result.elapsed_ms / 1000)).toFixed(1)} tok/s`
         : "";
-      console.log(`[Subtitle] Batch ${step + 1}/${totalBatches} (seg ${start}): ${result.segments.length} segs, ${result.elapsed_ms ?? 0}ms ${tokS}`);
+      console.log(
+        `[Subtitle] Batch ${step + 1}/${totalBatches} (seg ${start}): ` +
+        `${result.segments.length} segs, ${streamedCount} streamed, ` +
+        `${result.elapsed_ms ?? 0}ms ${tokS}`
+      );
     } catch (e) {
       console.error(`[Subtitle] Batch ${start} failed:`, e);
     }
