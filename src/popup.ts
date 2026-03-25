@@ -1,7 +1,7 @@
-import type { Settings, ConnectionStatus } from "./types";
+import type { Settings, ConnectionStatus, DebugEntry } from "./types";
 
 /**
- * Popup UI: 설정 및 상태 표시.
+ * Popup UI: 설정 + 상태 + debug log.
  */
 
 const DEFAULT_SETTINGS: Settings = {
@@ -48,10 +48,69 @@ function updateStatusDisplay(status: ConnectionStatus): void {
   text.textContent = labels[status];
 }
 
+// --- Debug panel ---
+
+function formatTime(ts: number): string {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+}
+
+function colorizeMsg(msg: string): string {
+  if (msg.startsWith("[inject]")) return `<span class="inject">${escHtml(msg)}</span>`;
+  if (msg.includes("failed") || msg.includes("error")) return `<span class="err">${escHtml(msg)}</span>`;
+  return `<span class="bg">${escHtml(msg)}</span>`;
+}
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderDebugLog(entries: DebugEntry[]): void {
+  const logEl = $("debug-log");
+  const emptyEl = $("debug-empty");
+  if (!logEl) return;
+
+  if (entries.length === 0) {
+    if (emptyEl) emptyEl.style.display = "block";
+    logEl.innerHTML = "";
+    return;
+  }
+
+  if (emptyEl) emptyEl.style.display = "none";
+  logEl.innerHTML = entries
+    .map((e) => `<span class="ts">${formatTime(e.ts)}</span> ${colorizeMsg(e.msg)}`)
+    .join("\n");
+
+  // auto-scroll to bottom
+  const panel = $("debug-panel");
+  if (panel) panel.scrollTop = panel.scrollHeight;
+}
+
+let debugOpen = false;
+
+function toggleDebug(): void {
+  debugOpen = !debugOpen;
+  const panel = $("debug-panel");
+  const arrow = $("debug-arrow");
+  if (panel) panel.classList.toggle("open", debugOpen);
+  if (arrow) arrow.innerHTML = debugOpen ? "&#9660;" : "&#9654;";
+
+  if (debugOpen) refreshDebugLog();
+}
+
+function refreshDebugLog(): void {
+  chrome.runtime.sendMessage({ type: "GET_DEBUG_LOG" }, (response) => {
+    if (response?.log) {
+      renderDebugLog(response.log as DebugEntry[]);
+    }
+  });
+}
+
+// --- Init ---
+
 async function init(): Promise<void> {
   const settings = await loadSettings();
 
-  // 폼 값 설정
   const wsUrlInput = $("ws-url") as HTMLInputElement | null;
   const apiKeyInput = $("api-key") as HTMLInputElement | null;
   const modelInput = $("model") as HTMLInputElement | null;
@@ -75,7 +134,7 @@ async function init(): Promise<void> {
     }
   });
 
-  // 설정 변경 이벤트
+  // 설정 변경
   $("settings-form")?.addEventListener("change", async () => {
     const newSettings: Partial<Settings> = {};
     if (wsUrlInput) newSettings.agentUrl = wsUrlInput.value;
@@ -87,6 +146,14 @@ async function init(): Promise<void> {
     if (positionSelect) newSettings.overlayPosition = positionSelect.value as "bottom" | "top";
     await saveSettings(newSettings);
   });
+
+  // Debug toggle
+  $("debug-toggle")?.addEventListener("click", toggleDebug);
+
+  // Auto-refresh debug log while open
+  setInterval(() => {
+    if (debugOpen) refreshDebugLog();
+  }, 2000);
 }
 
 // 상태 업데이트 수신

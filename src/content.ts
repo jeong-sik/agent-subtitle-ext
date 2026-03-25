@@ -16,9 +16,19 @@ let overlay: SubtitleOverlay | null = null;
 let currentVideoId: string | null = null;
 let segments: TranscriptSegment[] = [];
 
-/** inject.ts에서 postMessage로 보낸 transcript 수신. */
+/** inject.ts (MAIN world)에서 postMessage로 보낸 이벤트 수신. */
 window.addEventListener("message", async (event: MessageEvent) => {
   if (event.source !== window) return;
+
+  // Debug log relay: MAIN world -> background
+  if (event.data?.type === "__AI_SUBTITLE_DEBUG__") {
+    chrome.runtime.sendMessage({
+      type: "DEBUG_LOG",
+      entry: { ts: Date.now(), msg: `[inject] ${event.data.msg}` },
+    } as ExtensionMessage).catch(() => {});
+    return;
+  }
+
   if (event.data?.type !== "__AI_SUBTITLE_TRANSCRIPT__") return;
 
   const { videoId, segments: extracted } = event.data as {

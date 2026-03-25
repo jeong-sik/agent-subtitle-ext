@@ -18,6 +18,12 @@ export interface TranslateResponse {
   readonly tokens?: number;
 }
 
+/** Debug log entry for popup debug panel. */
+export interface DebugEntry {
+  readonly ts: number;
+  readonly msg: string;
+}
+
 /** Extension internal messages between content script and background. */
 export type ExtensionMessage =
   | { type: "TRANSCRIPT_READY"; videoId: string; segments: TranscriptSegment[]; currentTimeMs?: number }
@@ -25,7 +31,9 @@ export type ExtensionMessage =
   | { type: "TRANSLATION_UPDATE"; videoId: string; segments: { index: number; translated: string }[] }
   | { type: "TRANSLATION_COMPLETE"; videoId: string }
   | { type: "STATUS_UPDATE"; status: ConnectionStatus }
-  | { type: "GET_STATUS" };
+  | { type: "GET_STATUS" }
+  | { type: "DEBUG_LOG"; entry: DebugEntry }
+  | { type: "GET_DEBUG_LOG" };
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "translating";
 

@@ -5,7 +5,7 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      width: 320px;
+      width: 360px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       font-size: 13px;
       color: #e0e0e0;
@@ -14,7 +14,7 @@
     .header {
       display: flex;
       align-items: center;
-      gap: 8px;
+      justify-content: space-between;
       padding: 12px 16px;
       background: #16213e;
       border-bottom: 1px solid #0f3460;
@@ -23,6 +23,10 @@
       font-size: 14px;
       font-weight: 600;
       color: #e0e0e0;
+    }
+    .header .version {
+      font-size: 11px;
+      color: #64748b;
     }
     .status {
       display: flex;
@@ -88,11 +92,54 @@
     .field + .field {
       margin-top: 10px;
     }
+
+    /* Debug panel */
+    .debug-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      background: #0d1b2a;
+      border-top: 1px solid #0f3460;
+      cursor: pointer;
+      user-select: none;
+    }
+    .debug-toggle:hover { background: #162032; }
+    .debug-toggle span { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
+    .debug-toggle .arrow { color: #64748b; font-size: 10px; }
+    .debug-panel {
+      display: none;
+      max-height: 200px;
+      overflow-y: auto;
+      background: #0a0f1a;
+      border-top: 1px solid #0f3460;
+      padding: 8px;
+    }
+    .debug-panel.open { display: block; }
+    .debug-panel pre {
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 10px;
+      line-height: 1.5;
+      color: #94a3b8;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .debug-panel .ts { color: #475569; }
+    .debug-panel .inject { color: #60a5fa; }
+    .debug-panel .bg { color: #4ade80; }
+    .debug-panel .err { color: #f87171; }
+    .debug-empty {
+      color: #475569;
+      font-size: 11px;
+      text-align: center;
+      padding: 16px;
+    }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>AI Subtitle</h1>
+    <span class="version">v0.7.0</span>
   </div>
 
   <div class="status">
@@ -145,6 +192,15 @@
       </div>
     </div>
   </form>
+
+  <div class="debug-toggle" id="debug-toggle">
+    <span>Debug Log</span>
+    <span class="arrow" id="debug-arrow">&#9654;</span>
+  </div>
+  <div class="debug-panel" id="debug-panel">
+    <div class="debug-empty" id="debug-empty">No logs yet. Open a YouTube video.</div>
+    <pre id="debug-log"></pre>
+  </div>
 
   <script src="dist/popup.js"></script>
 </body>
