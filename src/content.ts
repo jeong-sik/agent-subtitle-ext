@@ -99,6 +99,7 @@ async function loadSettings(): Promise<Settings> {
   const defaults: Settings = {
     agentUrl: "http://127.0.0.1:8085",
     apiKey: "",
+    model: "auto",
     targetLang: "ko",
     showDualSubtitles: true,
     fontSize: 18,

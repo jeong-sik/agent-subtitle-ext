@@ -12,15 +12,18 @@ const REQUEST_TIMEOUT_MS = 120_000;
 export class AgentClient {
   private baseUrl: string;
   private apiKey: string;
+  private model: string;
 
-  constructor(baseUrl: string, apiKey = "") {
+  constructor(baseUrl: string, apiKey = "", model = "auto") {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.apiKey = apiKey;
+    this.model = model;
   }
 
-  setConfig(baseUrl: string, apiKey = ""): void {
+  setConfig(baseUrl: string, apiKey = "", model = "auto"): void {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.apiKey = apiKey;
+    this.model = model;
   }
 
   async isAvailable(): Promise<boolean> {
@@ -59,7 +62,7 @@ export class AgentClient {
         method: "POST",
         headers,
         body: JSON.stringify({
-          model: "auto",
+          model: this.model,
           messages: [{ role: "user", content: prompt }],
           max_tokens: 2048,
           temperature: 0.3,

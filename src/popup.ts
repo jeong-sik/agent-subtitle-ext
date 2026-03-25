@@ -7,6 +7,7 @@ import type { Settings, ConnectionStatus } from "./types";
 const DEFAULT_SETTINGS: Settings = {
   agentUrl: "http://127.0.0.1:8085",
   apiKey: "",
+  model: "auto",
   targetLang: "ko",
   showDualSubtitles: true,
   fontSize: 18,
@@ -53,6 +54,7 @@ async function init(): Promise<void> {
   // 폼 값 설정
   const wsUrlInput = $("ws-url") as HTMLInputElement | null;
   const apiKeyInput = $("api-key") as HTMLInputElement | null;
+  const modelInput = $("model") as HTMLInputElement | null;
   const targetLangSelect = $("target-lang") as HTMLSelectElement | null;
   const dualSubCheck = $("dual-subtitles") as HTMLInputElement | null;
   const fontSizeInput = $("font-size") as HTMLInputElement | null;
@@ -60,6 +62,7 @@ async function init(): Promise<void> {
 
   if (wsUrlInput) wsUrlInput.value = settings.agentUrl;
   if (apiKeyInput) apiKeyInput.value = settings.apiKey;
+  if (modelInput) modelInput.value = settings.model;
   if (targetLangSelect) targetLangSelect.value = settings.targetLang;
   if (dualSubCheck) dualSubCheck.checked = settings.showDualSubtitles;
   if (fontSizeInput) fontSizeInput.value = String(settings.fontSize);
@@ -77,6 +80,7 @@ async function init(): Promise<void> {
     const newSettings: Partial<Settings> = {};
     if (wsUrlInput) newSettings.agentUrl = wsUrlInput.value;
     if (apiKeyInput) newSettings.apiKey = apiKeyInput.value;
+    if (modelInput) newSettings.model = modelInput.value;
     if (targetLangSelect) newSettings.targetLang = targetLangSelect.value;
     if (dualSubCheck) newSettings.showDualSubtitles = dualSubCheck.checked;
     if (fontSizeInput) newSettings.fontSize = parseInt(fontSizeInput.value, 10) || 18;

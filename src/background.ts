@@ -17,7 +17,7 @@ let translatingVideoId: string | null = null;
 async function getClient(): Promise<AgentClient> {
   const settings = await getSettings();
   if (!client) {
-    client = new AgentClient(settings.agentUrl, settings.apiKey);
+    client = new AgentClient(settings.agentUrl, settings.apiKey, settings.model);
   }
   return client;
 }
@@ -26,6 +26,7 @@ function getSettings(): Promise<Settings> {
   const defaults: Settings = {
     agentUrl: "http://127.0.0.1:8085",
     apiKey: "",
+    model: "auto",
     targetLang: "ko",
     showDualSubtitles: true,
     fontSize: 18,
@@ -120,13 +121,11 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
 });
 
 chrome.storage.onChanged.addListener((changes) => {
-  if (changes["agentUrl"] || changes["apiKey"]) {
-    const settings = {
-      agentUrl: (changes["agentUrl"]?.newValue as string) ?? "",
-      apiKey: (changes["apiKey"]?.newValue as string) ?? "",
-    };
-    if (client && settings.agentUrl) {
-      client.setConfig(settings.agentUrl, settings.apiKey);
-    }
+  if (changes["agentUrl"] || changes["apiKey"] || changes["model"]) {
+    getSettings().then((s) => {
+      if (client) {
+        client.setConfig(s.agentUrl, s.apiKey, s.model);
+      }
+    });
   }
 });

@@ -66,6 +66,7 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "tr
 export interface Settings {
   agentUrl: string;
   apiKey: string;
+  model: string;
   targetLang: string;
   showDualSubtitles: boolean;
   fontSize: number;
@@ -76,6 +77,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   agentUrl: "http://127.0.0.1:8085",
   apiKey: "",
+  model: "auto",
   targetLang: "ko",
   showDualSubtitles: true,
   fontSize: 18,
