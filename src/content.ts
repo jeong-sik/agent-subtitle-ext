@@ -54,11 +54,14 @@ window.addEventListener("message", async (event: MessageEvent) => {
 
   overlay.setSegments(segments);
 
-  console.log(`${LOG} Requesting translation for ${videoId} (${segments.length} segments)`);
+  const video = document.querySelector("video.html5-main-video") as HTMLVideoElement | null;
+  const currentTimeMs = Math.round((video?.currentTime ?? 0) * 1000);
+  console.log(`${LOG} Requesting translation for ${videoId} (${segments.length} segments, from ${currentTimeMs}ms)`);
   chrome.runtime.sendMessage({
     type: "TRANSCRIPT_READY",
     videoId,
     segments: extracted,
+    currentTimeMs,
   } as ExtensionMessage).catch((e) => {
     console.warn(`${LOG} sendMessage failed:`, e);
   });
