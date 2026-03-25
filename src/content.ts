@@ -97,7 +97,7 @@ function notifyBackground(message: ExtensionMessage): void {
 /** chrome.storage에서 설정을 로드한다. */
 async function loadSettings(): Promise<Settings> {
   const defaults: Settings = {
-    mascWsUrl: "ws://localhost:8937",
+    mascUrl: "http://127.0.0.1:8935",
     targetLang: "ko",
     showDualSubtitles: true,
     fontSize: 18,

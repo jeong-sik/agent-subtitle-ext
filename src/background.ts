@@ -29,7 +29,7 @@ async function getTranslationClient(): Promise<"masc" | "direct"> {
   // MASC 연결 시도
   try {
     if (!mascClient || mascClient.connectionState === "disconnected") {
-      mascClient = new MascClient(settings.mascWsUrl);
+      mascClient = new MascClient(settings.mascUrl);
       mascClient.onStatusChange = (state) => {
         broadcastToTabs({
           type: "STATUS_UPDATE",
@@ -82,7 +82,7 @@ async function translateBatch(
 
 function getSettings(): Promise<Settings> {
   const defaults: Settings = {
-    mascWsUrl: "ws://localhost:8937",
+    mascUrl: "http://127.0.0.1:8935",
     targetLang: "ko",
     showDualSubtitles: true,
     fontSize: 18,
@@ -191,8 +191,8 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
 });
 
 chrome.storage.onChanged.addListener((changes) => {
-  if (changes["mascWsUrl"] && mascClient) {
-    mascClient.setUrl(changes["mascWsUrl"].newValue as string);
+  if (changes["mascUrl"] && mascClient) {
+    mascClient.setUrl(changes["mascUrl"].newValue as string);
     useDirectMode = false; // URL 변경 시 MASC 재시도
   }
 });

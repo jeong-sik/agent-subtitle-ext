@@ -31,11 +31,8 @@ export class MascClient {
   onStatusChange?: (state: ConnectionState) => void;
 
   constructor(baseUrl: string) {
-    // ws:// URL이 들어오면 http://로 변환 (popup 설정 호환)
-    this.baseUrl = baseUrl
-      .replace(/^ws:\/\//, "http://")
-      .replace(/^wss:\/\//, "https://")
-      .replace(/:8937\/?$/, ":8935");
+    // 트레일링 슬래시 제거
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
 
   get connectionState(): ConnectionState {
@@ -91,10 +88,7 @@ export class MascClient {
 
   /** URL을 변경한다. 재연결 필요. */
   setUrl(url: string): void {
-    this.baseUrl = url
-      .replace(/^ws:\/\//, "http://")
-      .replace(/^wss:\/\//, "https://")
-      .replace(/:8937\/?$/, ":8935");
+    this.baseUrl = url.replace(/\/+$/, "");
     this.disconnect();
   }
 
