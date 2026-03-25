@@ -97,15 +97,16 @@ async function fetchJson3Transcript(
 
   console.log(`${LOG} Fetching transcript: ${url.hostname}${url.pathname}`);
 
-  const response = await fetch(url.toString());
+  const response = await fetch(url.toString(), { credentials: "include" });
   if (!response.ok) {
     console.warn(`${LOG} Transcript fetch failed: ${response.status}`);
     return [];
   }
 
   const text = await response.text();
+  console.log(`${LOG} Transcript response: ${text.length} chars`);
   if (!text || text.length < 10) {
-    console.warn(`${LOG} Transcript response empty`);
+    console.warn(`${LOG} Transcript response empty (${text.length} chars): ${text.slice(0, 100)}`);
     return [];
   }
 
@@ -129,10 +130,11 @@ async function fetchXmlTranscript(
 
   console.log(`${LOG} Trying XML transcript fallback`);
 
-  const response = await fetch(url.toString());
+  const response = await fetch(url.toString(), { credentials: "include" });
   if (!response.ok) return [];
 
   const xml = await response.text();
+  console.log(`${LOG} XML response: ${xml.length} chars`);
   if (!xml || !xml.includes("<text")) return [];
 
   const segments: TranscriptSegment[] = [];
