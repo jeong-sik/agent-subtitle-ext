@@ -1,8 +1,12 @@
 /**
- * MAIN world — YouTube 페이지 컨텍스트.
+ * MAIN world — YouTube 페이지 컨텍스트에서 transcript를 추출한다.
  *
- * Primary: Innertube get_transcript API (CC 토글 불필요)
- * Fallback: fetch/XHR intercept (YouTube 자체 timedtext 요청 캡처)
+ * 전략 (우선순위):
+ * 1. ytInitialPlayerResponse → captionTracks[].baseUrl (인증 토큰 내장)
+ * 2. player.getOption("captions", "tracklist") → baseUrl
+ * 3. XHR/fetch intercept (CC 켜져 있을 때 자동 캡처)
+ *
+ * 1번이 가장 안정적: 별도 API 호출 없이 페이지가 이미 가진 데이터를 읽는다.
  */
 
 const LOG = "[AI Subtitle:inject]";
@@ -14,171 +18,153 @@ interface Segment {
   text: string;
 }
 
+interface CaptionTrack {
+  baseUrl: string;
+  languageCode: string;
+  name?: { simpleText?: string };
+  kind?: string; // "asr" = auto-generated
+}
+
 let capturedSegments: Segment[] = [];
 let lastVideoId = "";
 
 function emit(videoId: string, segments: Segment[]): void {
-  if (segments.length === 0 || (videoId === lastVideoId && capturedSegments.length > 0)) return;
+  if (segments.length === 0) return;
+  if (videoId === lastVideoId && capturedSegments.length > 0) return;
   lastVideoId = videoId;
   capturedSegments = segments;
-  console.log(`${LOG} Captured ${segments.length} segments for ${videoId}`);
+  console.log(`${LOG} Emit ${segments.length} segments for ${videoId}`);
   window.postMessage({ type: "__AI_SUBTITLE_TRANSCRIPT__", videoId, segments }, "*");
 }
 
-// ─── Innertube get_transcript (Primary) ────────────────────
+// ─── Strategy 1: ytInitialPlayerResponse ─────────────────
 
-/** ytcfg에서 API key 추출. */
-function getApiKey(): string {
+/**
+ * YouTube 페이지가 로드할 때 window.ytInitialPlayerResponse에
+ * captions.playerCaptionsTracklistRenderer.captionTracks 배열이 존재.
+ * SPA 네비게이션 후에는 사라지므로 ytplayer.config도 확인.
+ */
+function getCaptionTracks(): CaptionTrack[] {
   try {
-    const ytcfg = (window as unknown as { ytcfg?: { get: (k: string) => string } }).ytcfg;
-    return ytcfg?.get("INNERTUBE_API_KEY") ?? "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
-  } catch {
-    return "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
-  }
-}
+    // 첫 로드: ytInitialPlayerResponse
+    const w = window as unknown as Record<string, unknown>;
+    const initial = w["ytInitialPlayerResponse"] as Record<string, unknown> | undefined;
+    const tracks = extractTracks(initial);
+    if (tracks.length > 0) return tracks;
 
-/** ytcfg에서 client context 추출. */
-function getClientContext(): Record<string, string> {
-  try {
-    const ytcfg = (window as unknown as { ytcfg?: { get: (k: string) => string } }).ytcfg;
-    return {
-      hl: ytcfg?.get("HL") ?? "en",
-      gl: ytcfg?.get("GL") ?? "US",
-      clientName: "WEB",
-      clientVersion: ytcfg?.get("INNERTUBE_CLIENT_VERSION") ?? "2.20260324",
+    // SPA 네비게이션 후: player API
+    const player = document.querySelector("#movie_player") as HTMLElement & {
+      getPlayerResponse?: () => Record<string, unknown>;
+      getOption?: (m: string, o: string) => unknown;
     };
-  } catch {
-    return { hl: "en", gl: "US", clientName: "WEB", clientVersion: "2.20260324" };
-  }
-}
 
-/** /youtubei/v1/next 에서 transcript params 추출. */
-async function getTranscriptParams(videoId: string): Promise<string | null> {
-  const apiKey = getApiKey();
-  const client = getClientContext();
+    // player.getPlayerResponse()
+    const playerResp = player?.getPlayerResponse?.();
+    const tracks2 = extractTracks(playerResp);
+    if (tracks2.length > 0) return tracks2;
 
-  const resp = await fetch(`https://www.youtube.com/youtubei/v1/next?key=${apiKey}&prettyPrint=false`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ context: { client }, videoId }),
-  });
-
-  if (!resp.ok) return null;
-  const data = await resp.json();
-
-  // 재귀적으로 getTranscriptEndpoint.params 검색
-  function findParams(obj: unknown, depth = 0): string | null {
-    if (depth > 15 || !obj || typeof obj !== "object") return null;
-    const record = obj as Record<string, unknown>;
-    if ("getTranscriptEndpoint" in record) {
-      const ep = record["getTranscriptEndpoint"] as Record<string, unknown>;
-      if (typeof ep?.params === "string") return ep.params;
-    }
-    for (const v of Object.values(record)) {
-      const r = findParams(v, depth + 1);
-      if (r) return r;
-    }
-    return null;
-  }
-
-  return findParams(data);
-}
-
-/** get_transcript 호출 → segments 파싱. */
-async function fetchViaInnertube(videoId: string): Promise<Segment[]> {
-  console.log(`${LOG} Trying Innertube get_transcript...`);
-
-  const params = await getTranscriptParams(videoId);
-  if (!params) {
-    console.warn(`${LOG} Innertube: no transcript params found`);
-    return [];
-  }
-
-  const apiKey = getApiKey();
-  const client = getClientContext();
-
-  const resp = await fetch(`https://www.youtube.com/youtubei/v1/get_transcript?key=${apiKey}&prettyPrint=false`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ context: { client }, params }),
-  });
-
-  if (!resp.ok) {
-    console.warn(`${LOG} Innertube: get_transcript failed ${resp.status}`);
-    return [];
-  }
-
-  const data = await resp.json();
-
-  // 응답 구조: actions[0].updateEngagementPanelAction.content.transcriptRenderer.body.transcriptBodyRenderer.cueGroups[]
-  const segments: Segment[] = [];
-  try {
-    const body = data
-      ?.actions?.[0]
-      ?.updateEngagementPanelAction
-      ?.content
-      ?.transcriptRenderer
-      ?.body
-      ?.transcriptBodyRenderer;
-
-    const cueGroups = body?.cueGroups ?? [];
-    let idx = 0;
-    for (const group of cueGroups) {
-      const cue = group?.transcriptCueGroupRenderer?.cues?.[0]?.transcriptCueRenderer;
-      if (!cue) continue;
-      const text = cue.cue?.simpleText ?? cue.cue?.runs?.map((r: { text: string }) => r.text).join("") ?? "";
-      if (!text.trim()) continue;
-      const startMs = parseInt(cue.startOffsetMs ?? "0", 10);
-      const durMs = parseInt(cue.durationMs ?? "0", 10);
-      segments.push({ index: idx, start_ms: startMs, duration_ms: durMs, text: text.trim() });
-      idx++;
-    }
+    // player.getOption("captions", "tracklist")
+    const tracklist = player?.getOption?.("captions", "tracklist") as CaptionTrack[] | undefined;
+    if (tracklist?.length) return tracklist;
   } catch (e) {
-    console.warn(`${LOG} Innertube: parse error`, e);
+    console.warn(`${LOG} getCaptionTracks error:`, e);
   }
-
-  console.log(`${LOG} Innertube: ${segments.length} segments`);
-  return segments;
-}
-
-// ─── XHR/Fetch Intercept (Fallback) ───────────────────────
-
-function parseTimedText(text: string): Segment[] {
-  if (!text || text.length < 10) return [];
-  try {
-    const data = JSON.parse(text);
-    if (data.events?.length) {
-      const segs: Segment[] = [];
-      let idx = 0;
-      for (const ev of data.events) {
-        if (ev.tStartMs == null || ev.dDurationMs == null || !ev.segs?.length) continue;
-        const t = ev.segs.map((s: { utf8?: string }) => s.utf8 ?? "").join("").trim();
-        if (!t || t === "\n") continue;
-        segs.push({ index: idx, start_ms: ev.tStartMs, duration_ms: ev.dDurationMs, text: t });
-        idx++;
-      }
-      return segs;
-    }
-  } catch { /* not JSON */ }
-
-  if (text.includes("<text")) {
-    const segs: Segment[] = [];
-    const re = /<text\s+start="([\d.]+)"\s+dur="([\d.]+)"[^>]*>(.*?)<\/text>/gs;
-    let m: RegExpExecArray | null;
-    let idx = 0;
-    while ((m = re.exec(text)) !== null) {
-      const t = (m[3] ?? "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
-      if (!t) continue;
-      segs.push({ index: idx, start_ms: Math.round(parseFloat(m[1] ?? "0") * 1000), duration_ms: Math.round(parseFloat(m[2] ?? "0") * 1000), text: t });
-      idx++;
-    }
-    return segs;
-  }
-
   return [];
 }
 
-// Intercept fetch
+function extractTracks(response: Record<string, unknown> | undefined): CaptionTrack[] {
+  if (!response) return [];
+  try {
+    const captions = response["captions"] as Record<string, unknown> | undefined;
+    const renderer = captions?.["playerCaptionsTracklistRenderer"] as Record<string, unknown> | undefined;
+    const tracks = renderer?.["captionTracks"] as CaptionTrack[] | undefined;
+    return tracks ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * captionTracks에서 영어 트랙을 우선 선택.
+ * 없으면 첫 번째 트랙 사용.
+ */
+function pickTrack(tracks: CaptionTrack[]): CaptionTrack | null {
+  if (tracks.length === 0) return null;
+  // 영어 우선
+  const en = tracks.find((t) => t.languageCode === "en");
+  if (en) return en;
+  // 그 외 아무거나
+  return tracks[0] ?? null;
+}
+
+/** baseUrl에서 json3 형식으로 transcript fetch. */
+async function fetchFromBaseUrl(baseUrl: string): Promise<Segment[]> {
+  // fmt=json3 추가 (이미 있으면 덮어쓰기)
+  const url = new URL(baseUrl);
+  url.searchParams.set("fmt", "json3");
+
+  console.log(`${LOG} Fetching transcript from baseUrl...`);
+  const resp = await fetch(url.toString());
+  if (!resp.ok) {
+    console.warn(`${LOG} baseUrl fetch failed: ${resp.status}`);
+    return [];
+  }
+
+  const text = await resp.text();
+  console.log(`${LOG} baseUrl response: ${text.length} chars`);
+  return parseJson3(text);
+}
+
+// ─── JSON3 Parser ────────────────────────────────────────
+
+/**
+ * YouTube JSON3 timedtext 형식 파싱.
+ * { events: [{ tStartMs, dDurationMs, segs: [{ utf8 }] }] }
+ */
+function parseJson3(text: string): Segment[] {
+  if (!text || text.length < 10) return [];
+
+  try {
+    const data = JSON.parse(text) as {
+      events?: {
+        tStartMs?: number;
+        dDurationMs?: number;
+        segs?: { utf8?: string }[];
+      }[];
+    };
+
+    if (!data.events?.length) return [];
+
+    const segments: Segment[] = [];
+    let idx = 0;
+
+    for (const ev of data.events) {
+      if (ev.tStartMs == null || !ev.segs?.length) continue;
+
+      const t = ev.segs.map((s) => s.utf8 ?? "").join("").trim();
+      if (!t || t === "\n") continue;
+
+      // dDurationMs가 없는 이벤트도 있음 (예: 라인 구분자)
+      const duration = ev.dDurationMs ?? 0;
+      if (duration === 0) continue;
+
+      segments.push({
+        index: idx,
+        start_ms: ev.tStartMs,
+        duration_ms: duration,
+        text: t,
+      });
+      idx++;
+    }
+
+    return segments;
+  } catch {
+    return [];
+  }
+}
+
+// ─── Strategy 3: XHR/Fetch Intercept (Last Resort) ───────
+
 const origFetch = window.fetch;
 window.fetch = async function (...args) {
   const resp = await origFetch.apply(this, args);
@@ -189,14 +175,13 @@ window.fetch = async function (...args) {
       const text = await clone.text();
       console.log(`${LOG} Intercepted timedtext fetch: ${text.length} chars`);
       const videoId = new URLSearchParams(window.location.search).get("v") ?? "";
-      const segs = parseTimedText(text);
+      const segs = parseJson3(text);
       if (segs.length > 0) emit(videoId, segs);
     } catch { /* ignore */ }
   }
   return resp;
 };
 
-// Intercept XHR
 const origOpen = XMLHttpRequest.prototype.open;
 const origSend = XMLHttpRequest.prototype.send;
 XMLHttpRequest.prototype.open = function (method: string, url: string | URL, ...rest: unknown[]) {
@@ -210,7 +195,7 @@ XMLHttpRequest.prototype.send = function (...args) {
       const text = xhr.responseText ?? "";
       console.log(`${LOG} Intercepted timedtext XHR: ${text.length} chars`);
       const videoId = new URLSearchParams(window.location.search).get("v") ?? "";
-      const segs = parseTimedText(text);
+      const segs = parseJson3(text);
       if (segs.length > 0) emit(videoId, segs);
     });
   }
@@ -219,31 +204,38 @@ XMLHttpRequest.prototype.send = function (...args) {
 
 console.log(`${LOG} Intercept installed`);
 
-// ─── Main: Innertube first, intercept as fallback ─────────
+// ─── Main ────────────────────────────────────────────────
 
 async function run(): Promise<void> {
   const videoId = new URLSearchParams(window.location.search).get("v");
   if (!videoId) return;
 
-  // 이미 캡처된 데이터가 있으면 스킵
   if (videoId === lastVideoId && capturedSegments.length > 0) {
     emit(videoId, capturedSegments);
     return;
   }
 
-  // Reset
   capturedSegments = [];
   lastVideoId = "";
 
-  // Primary: Innertube
-  const segs = await fetchViaInnertube(videoId);
-  if (segs.length > 0) {
-    emit(videoId, segs);
-    return;
+  // Strategy 1: captionTracks baseUrl (가장 안정적)
+  const tracks = getCaptionTracks();
+  console.log(`${LOG} Found ${tracks.length} caption tracks`);
+
+  if (tracks.length > 0) {
+    const track = pickTrack(tracks);
+    if (track) {
+      console.log(`${LOG} Using track: ${track.languageCode} (${track.kind ?? "manual"})`);
+      const segs = await fetchFromBaseUrl(track.baseUrl);
+      if (segs.length > 0) {
+        emit(videoId, segs);
+        return;
+      }
+    }
   }
 
-  // Fallback: CC 트리거해서 XHR intercept가 잡도록
-  console.log(`${LOG} Innertube failed, triggering CC for XHR intercept...`);
+  // Strategy 3: CC 트리거로 XHR intercept가 잡기를 기대
+  console.log(`${LOG} No captionTracks found, triggering CC...`);
   try {
     const player = document.querySelector("#movie_player") as HTMLElement & {
       loadModule?: (m: string) => void;
@@ -251,18 +243,20 @@ async function run(): Promise<void> {
       setOption?: (m: string, o: string, v: unknown) => void;
     };
     player?.loadModule?.("captions");
-    const tracks = player?.getOption?.("captions", "tracklist") as { languageCode: string }[] | undefined;
-    if (tracks?.length) {
+    const playerTracks = player?.getOption?.("captions", "tracklist") as CaptionTrack[] | undefined;
+    if (playerTracks?.length) {
       player?.setOption?.("captions", "track", {});
-      setTimeout(() => player?.setOption?.("captions", "track", tracks[0]), 300);
+      setTimeout(() => player?.setOption?.("captions", "track", playerTracks[0]), 300);
     }
   } catch { /* ignore */ }
 }
 
+// SPA 네비게이션 감지
 document.addEventListener("yt-navigate-finish", () => {
   capturedSegments = [];
   lastVideoId = "";
   setTimeout(() => run().catch(console.error), 1500);
 });
 
+// 초기 실행 (약간의 딜레이로 ytInitialPlayerResponse 로드 대기)
 setTimeout(() => run().catch(console.error), 2000);
