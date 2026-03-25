@@ -27,6 +27,7 @@ interface CaptionTrack {
 
 let capturedSegments: Segment[] = [];
 let lastVideoId = "";
+let primaryRunDone = false; // run() 완료 전에는 intercept emit 차단
 
 /** MAIN world -> ISOLATED world -> background debug log. */
 function dbg(msg: string): void {
@@ -171,11 +172,16 @@ function parseJson3(text: string): Segment[] {
 
 // ─── Strategy 3: XHR/Fetch Intercept (Last Resort) ───────
 
+/** tlang= 파라미터가 있으면 YouTube 자동번역 → 무시. 원본 자막만 캡처. */
+function isAutoTranslated(url: string): boolean {
+  return url.includes("tlang=");
+}
+
 const origFetch = window.fetch;
 window.fetch = async function (...args) {
   const resp = await origFetch.apply(this, args);
   const url = typeof args[0] === "string" ? args[0] : (args[0] as Request)?.url ?? "";
-  if (url.includes("/api/timedtext") || url.includes("timedtext?")) {
+  if ((url.includes("/api/timedtext") || url.includes("timedtext?")) && !isAutoTranslated(url) && primaryRunDone) {
     try {
       const clone = resp.clone();
       const text = await clone.text();
@@ -196,10 +202,11 @@ XMLHttpRequest.prototype.open = function (method: string, url: string | URL, ...
 };
 XMLHttpRequest.prototype.send = function (...args) {
   const xhr = this as XMLHttpRequest & { _url?: string };
-  if (xhr._url?.includes("/api/timedtext") || xhr._url?.includes("timedtext?")) {
+  const xhrUrl = xhr._url ?? "";
+  if ((xhrUrl.includes("/api/timedtext") || xhrUrl.includes("timedtext?")) && !isAutoTranslated(xhrUrl) && primaryRunDone) {
     xhr.addEventListener("load", () => {
       const text = xhr.responseText ?? "";
-      dbg(`Intercepted timedtext XHR: ${text.length} chars`);
+      dbg(`Intercepted timedtext XHR: ${text.length} chars (${xhrUrl.match(/lang=([^&]*)/)?.[1] ?? "?"})`);
       const videoId = new URLSearchParams(window.location.search).get("v") ?? "";
       const segs = parseJson3(text);
       if (segs.length > 0) emit(videoId, segs);
@@ -218,6 +225,7 @@ async function run(): Promise<void> {
 
   if (videoId === lastVideoId && capturedSegments.length > 0) {
     emit(videoId, capturedSegments);
+    primaryRunDone = true;
     return;
   }
 
@@ -226,7 +234,7 @@ async function run(): Promise<void> {
 
   // Strategy 1: captionTracks baseUrl (가장 안정적)
   const tracks = getCaptionTracks();
-  dbg(`Found ${tracks.length} caption tracks`);
+  dbg(`Found ${tracks.length} caption tracks: ${tracks.map((t) => t.languageCode).join(", ")}`);
 
   if (tracks.length > 0) {
     const track = pickTrack(tracks);
@@ -235,13 +243,16 @@ async function run(): Promise<void> {
       const segs = await fetchFromBaseUrl(track.baseUrl);
       if (segs.length > 0) {
         emit(videoId, segs);
+        primaryRunDone = true;
         return;
       }
+      dbg(`baseUrl returned 0 segments, trying fallback...`);
     }
   }
 
-  // Strategy 3: CC 트리거로 XHR intercept가 잡기를 기대
-  dbg("No captionTracks found, triggering CC fallback...");
+  // Fallback: CC 트리거로 XHR intercept가 잡기를 기대
+  primaryRunDone = true; // intercept 활성화
+  dbg("Triggering CC for XHR intercept fallback...");
   try {
     const player = document.querySelector("#movie_player") as HTMLElement & {
       loadModule?: (m: string) => void;
@@ -261,8 +272,9 @@ async function run(): Promise<void> {
 document.addEventListener("yt-navigate-finish", () => {
   capturedSegments = [];
   lastVideoId = "";
-  setTimeout(() => run().catch(console.error), 1500);
+  primaryRunDone = false;
+  setTimeout(() => run().catch(console.error), 1000);
 });
 
-// 초기 실행 (약간의 딜레이로 ytInitialPlayerResponse 로드 대기)
-setTimeout(() => run().catch(console.error), 2000);
+// 초기 실행 — document_idle이므로 페이지 기본 데이터는 이미 존재
+setTimeout(() => run().catch(console.error), 500);
