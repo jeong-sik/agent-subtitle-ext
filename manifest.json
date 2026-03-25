@@ -7,8 +7,8 @@
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://youtube.com/*",
-    "http://127.0.0.1:8085/*",
-    "http://127.0.0.1:8935/*"
+    "http://127.0.0.1:8935/*",
+    "https://masc.crying.pictures/*"
   ],
   "background": {
     "service_worker": "dist/background.js",

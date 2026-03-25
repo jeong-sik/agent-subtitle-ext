@@ -1,83 +1,40 @@
 import { MascClient } from "./masc-client";
-import { DirectClient } from "./direct-client";
-import type { ExtensionMessage, Settings, TranscriptSegment, TranslateResponse } from "./types";
+import type { ExtensionMessage, Settings, TranscriptSegment } from "./types";
 
 /**
  * Background service worker (Manifest V3).
  *
- * 번역 파이프라인:
- * 1. MASC keeper (primary) → OAS cascade
- * 2. Direct LLM (fallback) → llama-server / Cloud API
- *
- * MASC 연결 실패 시 자동으로 direct 모드로 전환.
+ * MASC keeper를 통한 번역 파이프라인.
+ * LLM 라우팅은 MASC/OAS cascade가 전담.
  */
 
-const BATCH_SIZE = 15; // 10-20 사이가 품질/속도 균형점
+const BATCH_SIZE = 15;
 const CONTEXT_WINDOW = 3;
 
 let mascClient: MascClient | null = null;
-let directClient: DirectClient | null = null;
 let translatingVideoId: string | null = null;
-let useDirectMode = false;
 
-/** 번역 클라이언트를 초기화한다. MASC 우선, 실패 시 direct fallback. */
-async function getTranslationClient(): Promise<"masc" | "direct"> {
-  if (useDirectMode) return "direct";
-
+/** MASC 연결을 확보한다. */
+async function ensureConnected(): Promise<MascClient> {
   const settings = await getSettings();
 
-  // MASC 연결 시도
-  try {
-    if (!mascClient || mascClient.connectionState === "disconnected") {
-      mascClient = new MascClient(settings.mascUrl);
-      mascClient.onStatusChange = (state) => {
-        broadcastToTabs({
-          type: "STATUS_UPDATE",
-          status: state === "connected" ? "connected" : "disconnected",
-        });
-      };
-    }
+  if (!mascClient || mascClient.connectionState === "disconnected") {
+    mascClient = new MascClient(settings.mascUrl);
+    mascClient.onStatusChange = (state) => {
+      broadcastToTabs({
+        type: "STATUS_UPDATE",
+        status: state === "connected" ? "connected" : "disconnected",
+      });
+    };
+  }
+
+  if (mascClient.connectionState !== "connected") {
     await mascClient.connect();
     await mascClient.join();
     await mascClient.ensureKeeperUp();
-    return "masc";
-  } catch (e) {
-    console.warn("[MASC Subtitle] MASC unavailable, falling back to direct mode:", e);
   }
 
-  // Direct LLM fallback
-  if (!directClient) {
-    directClient = new DirectClient();
-  }
-
-  const available = await directClient.isAvailable();
-  if (available) {
-    useDirectMode = true;
-    broadcastToTabs({ type: "STATUS_UPDATE", status: "connected" });
-    return "direct";
-  }
-
-  throw new Error("No translation backend available (MASC and direct LLM both failed)");
-}
-
-/** 배치 번역 실행. 백엔드에 따라 MASC 또는 direct 호출. */
-async function translateBatch(
-  videoId: string,
-  batch: readonly TranscriptSegment[],
-  sourceLang: string,
-  targetLang: string,
-  contextBefore: readonly TranscriptSegment[]
-): Promise<TranslateResponse> {
-  const mode = await getTranslationClient();
-
-  if (mode === "masc" && mascClient) {
-    return mascClient.translateBatch(videoId, batch, sourceLang, targetLang, contextBefore);
-  }
-
-  if (!directClient) {
-    directClient = new DirectClient();
-  }
-  return directClient.translateBatch(videoId, batch, sourceLang, targetLang, contextBefore);
+  return mascClient;
 }
 
 function getSettings(): Promise<Settings> {
@@ -112,9 +69,7 @@ function sendToTab(tabId: number, message: ExtensionMessage): void {
 
 /**
  * 배치 번역 파이프라인.
- *
- * segments를 BATCH_SIZE 단위로 분할하고 순차 번역.
- * 이전 배치의 마지막 CONTEXT_WINDOW개를 다음 배치 context로 전달.
+ * BATCH_SIZE 단위로 분할, sliding window context로 일관성 유지.
  */
 async function runBatchTranslation(
   tabId: number,
@@ -123,6 +78,15 @@ async function runBatchTranslation(
   targetLang: string
 ): Promise<void> {
   translatingVideoId = videoId;
+
+  let client: MascClient;
+  try {
+    client = await ensureConnected();
+  } catch (e) {
+    console.error("[MASC Subtitle] MASC connection failed:", e);
+    broadcastToTabs({ type: "STATUS_UPDATE", status: "disconnected" });
+    return;
+  }
 
   broadcastToTabs({ type: "STATUS_UPDATE", status: "translating" });
 
@@ -135,7 +99,7 @@ async function runBatchTranslation(
     const contextBefore = translated.slice(-CONTEXT_WINDOW);
 
     try {
-      const result = await translateBatch(
+      const result = await client.translateBatch(
         videoId,
         batch,
         "en",
@@ -183,9 +147,8 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
   }
 
   if (message.type === "GET_STATUS") {
-    const mode = useDirectMode ? "direct" : "masc";
     const status = mascClient?.connectionState ?? "disconnected";
-    sendResponse({ status, mode });
+    sendResponse({ status });
     return true;
   }
 });
@@ -193,6 +156,5 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
 chrome.storage.onChanged.addListener((changes) => {
   if (changes["mascUrl"] && mascClient) {
     mascClient.setUrl(changes["mascUrl"].newValue as string);
-    useDirectMode = false; // URL 변경 시 MASC 재시도
   }
 });
