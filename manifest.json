@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Subtitle Translator",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "YouTube AI subtitle translation via any OpenAI-compatible agent",
   "permissions": ["storage", "activeTab"],
   "host_permissions": [

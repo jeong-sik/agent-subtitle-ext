@@ -1,5 +1,5 @@
 import { AgentClient } from "./agent-client";
-import type { ExtensionMessage, Settings, TranscriptSegment } from "./types";
+import type { DebugEntry, ExtensionMessage, Settings, TranscriptSegment } from "./types";
 
 /**
  * Background service worker (Manifest V3).
@@ -10,9 +10,18 @@ import type { ExtensionMessage, Settings, TranscriptSegment } from "./types";
 
 const BATCH_SIZE = 20;
 const CONTEXT_WINDOW = 3;
+const DEBUG_LOG_MAX = 50;
 
 let client: AgentClient | null = null;
 let translatingVideoId: string | null = null;
+const debugLog: DebugEntry[] = [];
+
+function dbg(msg: string): void {
+  const entry: DebugEntry = { ts: Date.now(), msg };
+  debugLog.push(entry);
+  if (debugLog.length > DEBUG_LOG_MAX) debugLog.shift();
+  console.log(`[Subtitle] ${msg}`);
+}
 
 async function getClient(): Promise<AgentClient> {
   const settings = await getSettings();
@@ -101,7 +110,7 @@ async function runBatchTranslation(
   const batchOrder = reorderBatches(segments, currentTimeMs);
   const totalBatches = batchOrder.length;
 
-  console.log(`[Subtitle] ${totalBatches} batches (stream), starting near ${Math.round(currentTimeMs / 1000)}s`);
+  dbg(`${totalBatches} batches (stream), starting near ${Math.round(currentTimeMs / 1000)}s`);
 
   for (let step = 0; step < totalBatches; step++) {
     if (translatingVideoId !== videoId) break;
@@ -158,13 +167,13 @@ async function runBatchTranslation(
       const tokS = result.elapsed_ms && result.tokens
         ? `${(result.tokens / (result.elapsed_ms / 1000)).toFixed(1)} tok/s`
         : "";
-      console.log(
-        `[Subtitle] Batch ${step + 1}/${totalBatches} (seg ${start}): ` +
+      dbg(
+        `Batch ${step + 1}/${totalBatches} (seg ${start}): ` +
         `${result.segments.length} segs, ${streamedCount} streamed, ` +
         `${result.elapsed_ms ?? 0}ms ${tokS}`
       );
     } catch (e) {
-      console.error(`[Subtitle] Batch ${start} failed:`, e);
+      dbg(`Batch ${start} failed: ${e}`);
     }
   }
 
@@ -177,12 +186,24 @@ async function runBatchTranslation(
 
 chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendResponse) => {
   if (message.type === "TRANSCRIPT_READY" && sender.tab?.id != null) {
+    dbg(`Transcript: ${message.segments.length} segs for ${message.videoId}`);
     const currentTimeMs = message.currentTimeMs ?? 0;
     getSettings().then((settings) => {
+      dbg(`Agent: ${settings.agentUrl} model=${settings.model} lang=${settings.targetLang}`);
       runBatchTranslation(
         sender.tab!.id!, message.videoId, message.segments, settings.targetLang, currentTimeMs
       ).catch(console.error);
     });
+  }
+
+  if (message.type === "DEBUG_LOG") {
+    debugLog.push(message.entry);
+    if (debugLog.length > DEBUG_LOG_MAX) debugLog.shift();
+  }
+
+  if (message.type === "GET_DEBUG_LOG") {
+    sendResponse({ log: debugLog });
+    return true;
   }
 
   if (message.type === "GET_STATUS") {
