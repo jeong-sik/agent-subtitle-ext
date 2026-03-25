@@ -132,7 +132,10 @@ async function runBatchTranslation(
         segments: [...result.segments],
       });
 
-      console.log(`[Subtitle] Batch ${step + 1}/${totalBatches} (seg ${start}): ${result.segments.length} translated`);
+      const tokS = result.elapsed_ms && result.tokens
+        ? `${(result.tokens / (result.elapsed_ms / 1000)).toFixed(1)} tok/s`
+        : "";
+      console.log(`[Subtitle] Batch ${step + 1}/${totalBatches} (seg ${start}): ${result.segments.length} segs, ${result.elapsed_ms ?? 0}ms ${tokS}`);
     } catch (e) {
       console.error(`[Subtitle] Batch ${start} failed:`, e);
     }

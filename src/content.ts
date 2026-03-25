@@ -126,15 +126,30 @@ chrome.storage.onChanged.addListener((changes) => {
     loadSettings().then((s) => overlay?.configure(s));
   }
 
-  // 언어 변경 시 재번역
+  // 언어 변경 시: 캐시 있으면 즉시 로드, 없으면 재번역
   if (changes["targetLang"] && currentVideoId && segments.length > 0) {
-    console.log(`${LOG} Language changed, re-translating...`);
-    for (const seg of segments) seg.translated = undefined;
-    overlay?.setSegments(segments);
-    chrome.runtime.sendMessage({
-      type: "TRANSCRIPT_READY",
-      videoId: currentVideoId,
-      segments,
-    } as ExtensionMessage).catch(() => {});
+    const newLang = changes["targetLang"].newValue as string;
+    console.log(`${LOG} Language changed to ${newLang}`);
+
+    getCached(currentVideoId, newLang).then((cached) => {
+      if (cached) {
+        console.log(`${LOG} Cache hit for ${newLang} — instant load`);
+        segments = cached;
+        overlay?.setSegments(segments);
+        return;
+      }
+
+      console.log(`${LOG} No cache for ${newLang}, translating...`);
+      for (const seg of segments) seg.translated = undefined;
+      overlay?.setSegments(segments);
+
+      const video = document.querySelector("video.html5-main-video") as HTMLVideoElement | null;
+      chrome.runtime.sendMessage({
+        type: "TRANSCRIPT_READY",
+        videoId: currentVideoId,
+        segments,
+        currentTimeMs: Math.round((video?.currentTime ?? 0) * 1000),
+      } as ExtensionMessage).catch(() => {});
+    }).catch(() => {});
   }
 });

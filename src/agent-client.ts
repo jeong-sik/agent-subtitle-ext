@@ -56,6 +56,7 @@ export class AgentClient {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const t0 = Date.now();
 
     try {
       const resp = await fetch(`${this.baseUrl}/v1/chat/completions`, {
@@ -76,10 +77,14 @@ export class AgentClient {
 
       const data = (await resp.json()) as {
         choices: { message: { content: string } }[];
+        usage?: { completion_tokens?: number; total_tokens?: number };
       };
 
+      const elapsed_ms = Date.now() - t0;
+      const tokens = data.usage?.completion_tokens ?? 0;
       const content = data.choices[0]?.message?.content ?? "";
-      return parseResponse(videoId, segments, content);
+      const result = parseResponse(videoId, segments, content);
+      return { ...result, elapsed_ms, tokens };
     } finally {
       clearTimeout(timeout);
     }

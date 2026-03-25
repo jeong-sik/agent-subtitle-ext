@@ -18,13 +18,15 @@ export interface TranslateRequest {
   readonly context_before?: readonly TranscriptSegment[];
 }
 
-/** Translation response from MASC keeper. */
+/** Translation response from agent. */
 export interface TranslateResponse {
   readonly video_id: string;
   readonly segments: readonly {
     readonly index: number;
     readonly translated: string;
   }[];
+  readonly elapsed_ms?: number;
+  readonly tokens?: number;
 }
 
 /** MASC JSON-RPC 2.0 request. */
