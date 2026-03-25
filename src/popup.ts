@@ -5,7 +5,8 @@ import type { Settings, ConnectionStatus } from "./types";
  */
 
 const DEFAULT_SETTINGS: Settings = {
-  mascUrl: "http://127.0.0.1:8935",
+  agentUrl: "http://127.0.0.1:8085",
+  apiKey: "",
   targetLang: "ko",
   showDualSubtitles: true,
   fontSize: 18,
@@ -51,12 +52,14 @@ async function init(): Promise<void> {
 
   // 폼 값 설정
   const wsUrlInput = $("ws-url") as HTMLInputElement | null;
+  const apiKeyInput = $("api-key") as HTMLInputElement | null;
   const targetLangSelect = $("target-lang") as HTMLSelectElement | null;
   const dualSubCheck = $("dual-subtitles") as HTMLInputElement | null;
   const fontSizeInput = $("font-size") as HTMLInputElement | null;
   const positionSelect = $("position") as HTMLSelectElement | null;
 
-  if (wsUrlInput) wsUrlInput.value = settings.mascUrl;
+  if (wsUrlInput) wsUrlInput.value = settings.agentUrl;
+  if (apiKeyInput) apiKeyInput.value = settings.apiKey;
   if (targetLangSelect) targetLangSelect.value = settings.targetLang;
   if (dualSubCheck) dualSubCheck.checked = settings.showDualSubtitles;
   if (fontSizeInput) fontSizeInput.value = String(settings.fontSize);
@@ -72,7 +75,8 @@ async function init(): Promise<void> {
   // 설정 변경 이벤트
   $("settings-form")?.addEventListener("change", async () => {
     const newSettings: Partial<Settings> = {};
-    if (wsUrlInput) newSettings.mascUrl = wsUrlInput.value;
+    if (wsUrlInput) newSettings.agentUrl = wsUrlInput.value;
+    if (apiKeyInput) newSettings.apiKey = apiKeyInput.value;
     if (targetLangSelect) newSettings.targetLang = targetLangSelect.value;
     if (dualSubCheck) newSettings.showDualSubtitles = dualSubCheck.checked;
     if (fontSizeInput) newSettings.fontSize = parseInt(fontSizeInput.value, 10) || 18;

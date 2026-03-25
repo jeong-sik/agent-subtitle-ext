@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "MASC Subtitle Translator",
+  "name": "AI Subtitle Translator",
   "version": "0.1.0",
-  "description": "AI-powered YouTube subtitle translation via MASC keeper agents",
+  "description": "YouTube AI subtitle translation via any OpenAI-compatible agent",
   "permissions": ["storage", "activeTab"],
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://youtube.com/*",
-    "http://127.0.0.1:8935/*",
-    "https://masc.crying.pictures/*"
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "dist/background.js",

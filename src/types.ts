@@ -64,7 +64,8 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "tr
 
 /** Extension settings stored in chrome.storage.local. */
 export interface Settings {
-  mascUrl: string;
+  agentUrl: string;
+  apiKey: string;
   targetLang: string;
   showDualSubtitles: boolean;
   fontSize: number;
@@ -73,7 +74,8 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  mascUrl: "http://127.0.0.1:8935",
+  agentUrl: "http://127.0.0.1:8085",
+  apiKey: "",
   targetLang: "ko",
   showDualSubtitles: true,
   fontSize: 18,

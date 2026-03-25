@@ -1,45 +1,31 @@
-import { MascClient } from "./masc-client";
+import { AgentClient } from "./agent-client";
 import type { ExtensionMessage, Settings, TranscriptSegment } from "./types";
 
 /**
  * Background service worker (Manifest V3).
  *
- * MASC keeper를 통한 번역 파이프라인.
- * LLM 라우팅은 MASC/OAS cascade가 전담.
+ * OpenAI-compatible agent endpoint에 번역 요청.
+ * 뒤에 뭐가 있는지 모름 — llama-server든 MASC keeper든 Cloud API든.
  */
 
 const BATCH_SIZE = 15;
 const CONTEXT_WINDOW = 3;
 
-let mascClient: MascClient | null = null;
+let client: AgentClient | null = null;
 let translatingVideoId: string | null = null;
 
-/** MASC 연결을 확보한다. */
-async function ensureConnected(): Promise<MascClient> {
+async function getClient(): Promise<AgentClient> {
   const settings = await getSettings();
-
-  if (!mascClient || mascClient.connectionState === "disconnected") {
-    mascClient = new MascClient(settings.mascUrl);
-    mascClient.onStatusChange = (state) => {
-      broadcastToTabs({
-        type: "STATUS_UPDATE",
-        status: state === "connected" ? "connected" : "disconnected",
-      });
-    };
+  if (!client) {
+    client = new AgentClient(settings.agentUrl, settings.apiKey);
   }
-
-  if (mascClient.connectionState !== "connected") {
-    await mascClient.connect();
-    await mascClient.join();
-    await mascClient.ensureKeeperUp();
-  }
-
-  return mascClient;
+  return client;
 }
 
 function getSettings(): Promise<Settings> {
   const defaults: Settings = {
-    mascUrl: "http://127.0.0.1:8935",
+    agentUrl: "http://127.0.0.1:8085",
+    apiKey: "",
     targetLang: "ko",
     showDualSubtitles: true,
     fontSize: 18,
@@ -67,10 +53,6 @@ function sendToTab(tabId: number, message: ExtensionMessage): void {
   chrome.tabs.sendMessage(tabId, message).catch(() => {});
 }
 
-/**
- * 배치 번역 파이프라인.
- * BATCH_SIZE 단위로 분할, sliding window context로 일관성 유지.
- */
 async function runBatchTranslation(
   tabId: number,
   videoId: string,
@@ -78,15 +60,7 @@ async function runBatchTranslation(
   targetLang: string
 ): Promise<void> {
   translatingVideoId = videoId;
-
-  let client: MascClient;
-  try {
-    client = await ensureConnected();
-  } catch (e) {
-    console.error("[MASC Subtitle] MASC connection failed:", e);
-    broadcastToTabs({ type: "STATUS_UPDATE", status: "disconnected" });
-    return;
-  }
+  const agent = await getClient();
 
   broadcastToTabs({ type: "STATUS_UPDATE", status: "translating" });
 
@@ -99,12 +73,8 @@ async function runBatchTranslation(
     const contextBefore = translated.slice(-CONTEXT_WINDOW);
 
     try {
-      const result = await client.translateBatch(
-        videoId,
-        batch,
-        "en",
-        targetLang,
-        contextBefore
+      const result = await agent.translateBatch(
+        videoId, batch, "en", targetLang, contextBefore
       );
 
       for (const seg of result.segments) {
@@ -121,9 +91,9 @@ async function runBatchTranslation(
         segments: [...result.segments],
       });
 
-      console.log(`[MASC Subtitle] Batch ${i / BATCH_SIZE + 1}: ${result.segments.length} segments translated`);
+      console.log(`[Subtitle] Batch ${i / BATCH_SIZE + 1}: ${result.segments.length} segments`);
     } catch (e) {
-      console.error(`[MASC Subtitle] Batch ${i} failed:`, e);
+      console.error(`[Subtitle] Batch ${i} failed:`, e);
     }
   }
 
@@ -138,23 +108,25 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
   if (message.type === "TRANSCRIPT_READY" && sender.tab?.id != null) {
     getSettings().then((settings) => {
       runBatchTranslation(
-        sender.tab!.id!,
-        message.videoId,
-        message.segments,
-        settings.targetLang
+        sender.tab!.id!, message.videoId, message.segments, settings.targetLang
       ).catch(console.error);
     });
   }
 
   if (message.type === "GET_STATUS") {
-    const status = mascClient?.connectionState ?? "disconnected";
-    sendResponse({ status });
+    sendResponse({ status: translatingVideoId ? "translating" : "connected" });
     return true;
   }
 });
 
 chrome.storage.onChanged.addListener((changes) => {
-  if (changes["mascUrl"] && mascClient) {
-    mascClient.setUrl(changes["mascUrl"].newValue as string);
+  if (changes["agentUrl"] || changes["apiKey"]) {
+    const settings = {
+      agentUrl: (changes["agentUrl"]?.newValue as string) ?? "",
+      apiKey: (changes["apiKey"]?.newValue as string) ?? "",
+    };
+    if (client && settings.agentUrl) {
+      client.setConfig(settings.agentUrl, settings.apiKey);
+    }
   }
 });
