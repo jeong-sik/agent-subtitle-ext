@@ -5,8 +5,8 @@ import type { ExtensionMessage, TranscriptSegment, Settings } from "./types";
 /**
  * Content script (ISOLATED world).
  *
- * Transcript 추출은 inject.ts (MAIN world)가 담당.
- * 이 스크립트는 CustomEvent로 데이터를 받아서 overlay + background 통신.
+ * inject.ts (MAIN world)에서 window.postMessage로 transcript 수신.
+ * Background에 번역 요청 → 결과를 overlay에 반영.
  */
 
 const LOG = "[AI Subtitle]";
@@ -15,16 +15,20 @@ let overlay: SubtitleOverlay | null = null;
 let currentVideoId: string | null = null;
 let segments: TranscriptSegment[] = [];
 
-/** inject.ts에서 보낸 transcript 데이터 수신. */
-window.addEventListener("__AI_SUBTITLE__", async (event: Event) => {
-  const { videoId, segments: extracted } = (event as CustomEvent).detail as {
+/** inject.ts에서 postMessage로 보낸 transcript 수신. */
+window.addEventListener("message", async (event: MessageEvent) => {
+  if (event.source !== window) return;
+  if (event.data?.type !== "__AI_SUBTITLE_TRANSCRIPT__") return;
+
+  const { videoId, segments: extracted } = event.data as {
+    type: string;
     videoId: string;
     segments: TranscriptSegment[];
   };
 
-  console.log(`${LOG} Received ${extracted.length} segments for ${videoId}`);
+  console.log(`${LOG} Received ${extracted?.length ?? 0} segments for ${videoId}`);
 
-  if (!videoId || extracted.length === 0) {
+  if (!videoId || !extracted?.length) {
     console.warn(`${LOG} No transcript for ${videoId}`);
     return;
   }
@@ -32,11 +36,8 @@ window.addEventListener("__AI_SUBTITLE__", async (event: Event) => {
   currentVideoId = videoId;
   segments = extracted;
 
-  // overlay 마운트
   await waitForPlayer();
-  if (!overlay) {
-    overlay = new SubtitleOverlay();
-  }
+  if (!overlay) overlay = new SubtitleOverlay();
   overlay.mount();
 
   const settings = await loadSettings();
@@ -53,11 +54,13 @@ window.addEventListener("__AI_SUBTITLE__", async (event: Event) => {
 
   overlay.setSegments(segments);
 
-  // background에 번역 요청
-  notifyBackground({
+  console.log(`${LOG} Requesting translation for ${videoId} (${segments.length} segments)`);
+  chrome.runtime.sendMessage({
     type: "TRANSCRIPT_READY",
     videoId,
     segments: extracted,
+  } as ExtensionMessage).catch((e) => {
+    console.warn(`${LOG} sendMessage failed:`, e);
   });
 });
 
@@ -72,10 +75,6 @@ function waitForPlayer(): Promise<void> {
     };
     check();
   });
-}
-
-function notifyBackground(message: ExtensionMessage): void {
-  chrome.runtime.sendMessage(message).catch(() => {});
 }
 
 async function loadSettings(): Promise<Settings> {
@@ -96,9 +95,10 @@ async function loadSettings(): Promise<Settings> {
   });
 }
 
-/** Background에서 오는 번역 결과 수신. */
+/** Background → content: 번역 결과 수신. */
 chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
   if (message.type === "TRANSLATION_UPDATE" && message.videoId === currentVideoId) {
+    console.log(`${LOG} Translation update: ${message.segments.length} segments`);
     for (const seg of message.segments) {
       const target = segments[seg.index];
       if (target) {
@@ -109,28 +109,29 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
   }
 
   if (message.type === "TRANSLATION_COMPLETE" && message.videoId === currentVideoId) {
+    console.log(`${LOG} Translation complete`);
     loadSettings().then((settings) => {
       setCached(currentVideoId!, settings.targetLang, segments).catch(console.error);
     });
   }
 });
 
-/** 설정 변경 시 현재 영상 재번역. */
+/** 설정 변경 → overlay 재설정 + 언어 변경 시 재번역. */
 chrome.storage.onChanged.addListener((changes) => {
-  if (!changes["targetLang"] || !currentVideoId || segments.length === 0) return;
-
-  console.log(`${LOG} Language changed to ${changes["targetLang"].newValue}, re-translating...`);
-
-  // 기존 번역 제거
-  for (const seg of segments) {
-    seg.translated = undefined;
+  // overlay 설정 즉시 반영
+  if (overlay && (changes["showDualSubtitles"] || changes["fontSize"] || changes["overlayPosition"])) {
+    loadSettings().then((s) => overlay?.configure(s));
   }
-  overlay?.setSegments(segments);
 
-  // 재번역 요청
-  notifyBackground({
-    type: "TRANSCRIPT_READY",
-    videoId: currentVideoId,
-    segments,
-  });
+  // 언어 변경 시 재번역
+  if (changes["targetLang"] && currentVideoId && segments.length > 0) {
+    console.log(`${LOG} Language changed, re-translating...`);
+    for (const seg of segments) seg.translated = undefined;
+    overlay?.setSegments(segments);
+    chrome.runtime.sendMessage({
+      type: "TRANSCRIPT_READY",
+      videoId: currentVideoId,
+      segments,
+    } as ExtensionMessage).catch(() => {});
+  }
 });

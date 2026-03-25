@@ -22,7 +22,7 @@ function emit(videoId: string, segments: Segment[]): void {
   lastVideoId = videoId;
   capturedSegments = segments;
   console.log(`${LOG} Captured ${segments.length} segments for ${videoId}`);
-  window.dispatchEvent(new CustomEvent("__AI_SUBTITLE__", { detail: { videoId, segments } }));
+  window.postMessage({ type: "__AI_SUBTITLE_TRANSCRIPT__", videoId, segments }, "*");
 }
 
 // ─── Innertube get_transcript (Primary) ────────────────────
