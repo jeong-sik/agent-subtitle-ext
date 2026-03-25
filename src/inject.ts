@@ -1,10 +1,9 @@
 /**
- * MAIN world script — YouTube 페이지 컨텍스트에서 실행.
+ * MAIN world script — YouTube fetch를 intercept하여 timedtext 응답을 캡처.
  *
- * 전략:
- * 1. YouTube player의 자막을 활성화
- * 2. video.textTracks에서 cue 데이터를 읽음 (YouTube가 이미 로드한 데이터)
- * 3. fetch 불필요 — YouTube 자체 세션으로 로드된 데이터를 그대로 사용
+ * YouTube player가 자막을 렌더링할 때 timedtext URL을 fetch한다.
+ * 그 응답을 가로채서 content script에 전달한다.
+ * 우리가 직접 fetch할 필요 없음 — YouTube가 이미 하는 걸 관찰.
  */
 
 const LOG = "[AI Subtitle:inject]";
@@ -16,142 +15,169 @@ interface TranscriptSegment {
   text: string;
 }
 
-interface YTPlayer extends HTMLElement {
-  getPlayerResponse?: () => unknown;
-  getOption?: (module: string, option: string) => unknown;
-  setOption?: (module: string, option: string, value: unknown) => void;
-  loadModule?: (module: string) => void;
-}
+let capturedSegments: TranscriptSegment[] = [];
+let lastVideoId = "";
 
-function getPlayer(): YTPlayer | null {
-  return document.querySelector("#movie_player") as YTPlayer | null;
-}
-
-function getVideo(): HTMLVideoElement | null {
-  return document.querySelector("video.html5-main-video");
-}
-
-/** YouTube player에서 자막 트랙을 활성화한다. */
-function enableCaptions(): void {
-  const player = getPlayer();
-  if (!player) return;
-
-  try {
-    player.loadModule?.("captions");
-
-    const trackList = player.getOption?.("captions", "tracklist") as
-      | { languageCode: string }[]
-      | undefined;
-
-    if (trackList?.length) {
-      const currentTrack = player.getOption?.("captions", "track");
-      if (!currentTrack) {
-        player.setOption?.("captions", "track", trackList[0]);
-        console.log(`${LOG} Enabled captions: ${trackList[0]?.languageCode}`);
-      }
-    }
-  } catch (e) {
-    console.warn(`${LOG} Failed to enable captions:`, e);
+/** JSON3 이벤트를 세그먼트로 변환. */
+function json3ToSegments(events: { tStartMs?: number; dDurationMs?: number; segs?: { utf8?: string }[] }[]): TranscriptSegment[] {
+  const segments: TranscriptSegment[] = [];
+  let idx = 0;
+  for (const ev of events) {
+    if (ev.tStartMs == null || ev.dDurationMs == null || !ev.segs?.length) continue;
+    const text = ev.segs.map(s => s.utf8 ?? "").join("").trim();
+    if (!text || text === "\n") continue;
+    segments.push({ index: idx, start_ms: ev.tStartMs, duration_ms: ev.dDurationMs, text });
+    idx++;
   }
+  return segments;
 }
 
-/** video.textTracks에서 cue 데이터를 추출한다. */
-function extractFromTextTracks(): TranscriptSegment[] {
-  const video = getVideo();
-  if (!video?.textTracks?.length) return [];
+/** XML timedtext를 세그먼트로 변환. */
+function xmlToSegments(xml: string): TranscriptSegment[] {
+  const segments: TranscriptSegment[] = [];
+  const regex = /<text\s+start="([\d.]+)"\s+dur="([\d.]+)"[^>]*>(.*?)<\/text>/gs;
+  let match: RegExpExecArray | null;
+  let idx = 0;
+  while ((match = regex.exec(xml)) !== null) {
+    const text = (match[3] ?? "")
+      .replace(/&amp;/g, "&").replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'").trim();
+    if (!text) continue;
+    segments.push({
+      index: idx,
+      start_ms: Math.round(parseFloat(match[1] ?? "0") * 1000),
+      duration_ms: Math.round(parseFloat(match[2] ?? "0") * 1000),
+      text,
+    });
+    idx++;
+  }
+  return segments;
+}
 
-  for (let i = 0; i < video.textTracks.length; i++) {
-    const track = video.textTracks[i];
-    if (!track?.cues?.length) continue;
+/** 응답 텍스트를 파싱해서 세그먼트를 추출. */
+function parseTimedTextResponse(text: string): TranscriptSegment[] {
+  if (!text || text.length < 10) return [];
 
-    const segments: TranscriptSegment[] = [];
-    for (let j = 0; j < track.cues.length; j++) {
-      const cue = track.cues[j] as VTTCue;
-      if (!cue?.text?.trim()) continue;
-
-      segments.push({
-        index: j,
-        start_ms: Math.round(cue.startTime * 1000),
-        duration_ms: Math.round((cue.endTime - cue.startTime) * 1000),
-        text: cue.text.trim(),
-      });
+  // JSON3 시도
+  try {
+    const data = JSON.parse(text);
+    if (data.events?.length) {
+      return json3ToSegments(data.events);
     }
+  } catch {
+    // not JSON
+  }
 
-    if (segments.length > 0) {
-      console.log(`${LOG} Got ${segments.length} cues from textTrack[${i}] (${track.language || "unknown"})`);
-      return segments;
-    }
+  // XML 시도
+  if (text.includes("<text")) {
+    return xmlToSegments(text);
   }
 
   return [];
 }
 
-/** cue가 로드될 때까지 대기한다 (최대 10초). */
-function waitForCues(maxWaitMs = 10000): Promise<TranscriptSegment[]> {
-  return new Promise((resolve) => {
-    const immediate = extractFromTextTracks();
-    if (immediate.length > 0) {
-      resolve(immediate);
-      return;
-    }
+/** 세그먼트를 content script에 전달. */
+function emitSegments(videoId: string, segments: TranscriptSegment[]): void {
+  if (segments.length === 0) return;
+  if (videoId === lastVideoId && capturedSegments.length > 0) return; // 중복 방지
 
-    const video = getVideo();
-    if (!video) { resolve([]); return; }
+  lastVideoId = videoId;
+  capturedSegments = segments;
 
-    const startTime = Date.now();
-    let resolved = false;
-
-    const done = (segs: TranscriptSegment[]): void => {
-      if (resolved) return;
-      resolved = true;
-      clearInterval(checkInterval);
-      resolve(segs);
-    };
-
-    const checkInterval = setInterval(() => {
-      const segs = extractFromTextTracks();
-      if (segs.length > 0) { done(segs); return; }
-      if (Date.now() - startTime > maxWaitMs) {
-        console.warn(`${LOG} Timed out waiting for cues (${maxWaitMs}ms)`);
-        done([]);
-      }
-    }, 500);
-
-    // track 추가 이벤트 감시
-    const onAddTrack = (): void => {
-      for (let i = 0; i < (video.textTracks?.length ?? 0); i++) {
-        const track = video.textTracks[i];
-        if (!track) continue;
-        const handler = (): void => {
-          const segs = extractFromTextTracks();
-          if (segs.length > 0) done(segs);
-        };
-        track.addEventListener("cuechange", handler, { once: true });
-      }
-    };
-
-    video.textTracks.addEventListener("addtrack", onAddTrack, { once: true });
-    onAddTrack();
-  });
-}
-
-async function run(): Promise<void> {
-  const videoId = new URLSearchParams(window.location.search).get("v");
-  if (!videoId) return;
-
-  console.log(`${LOG} Starting for ${videoId}`);
-  enableCaptions();
-
-  const segments = await waitForCues();
-  console.log(`${LOG} Result: ${segments.length} segments for ${videoId}`);
+  console.log(`${LOG} Captured ${segments.length} segments for ${videoId}`);
 
   window.dispatchEvent(new CustomEvent("__AI_SUBTITLE__", {
     detail: { videoId, segments },
   }));
 }
 
-document.addEventListener("yt-navigate-finish", () => {
-  setTimeout(() => run().catch(console.error), 1500);
-});
+// === fetch intercept ===
+const originalFetch = window.fetch;
+window.fetch = async function (...args: Parameters<typeof fetch>): Promise<Response> {
+  const response = await originalFetch.apply(this, args);
 
-setTimeout(() => run().catch(console.error), 2000);
+  const url = typeof args[0] === "string" ? args[0] : (args[0] as Request)?.url ?? "";
+
+  if (url.includes("/api/timedtext") || url.includes("timedtext?")) {
+    const videoId = new URLSearchParams(window.location.search).get("v") ?? "";
+
+    // clone으로 body를 한 번 더 읽음 (원래 소비자에게 영향 없음)
+    try {
+      const clone = response.clone();
+      const text = await clone.text();
+      console.log(`${LOG} Intercepted timedtext fetch: ${text.length} chars`);
+      const segments = parseTimedTextResponse(text);
+      if (segments.length > 0) {
+        emitSegments(videoId, segments);
+      }
+    } catch {
+      // clone/read 실패 무시
+    }
+  }
+
+  return response;
+};
+
+// === XMLHttpRequest intercept (YouTube는 XHR도 사용) ===
+const originalXhrOpen = XMLHttpRequest.prototype.open;
+const originalXhrSend = XMLHttpRequest.prototype.send;
+
+XMLHttpRequest.prototype.open = function (method: string, url: string | URL, ...rest: unknown[]) {
+  (this as XMLHttpRequest & { _url?: string })._url = typeof url === "string" ? url : url.toString();
+  return originalXhrOpen.apply(this, [method, url, ...rest] as Parameters<typeof originalXhrOpen>);
+};
+
+XMLHttpRequest.prototype.send = function (...args: Parameters<typeof originalXhrSend>) {
+  const xhr = this as XMLHttpRequest & { _url?: string };
+  const url = xhr._url ?? "";
+
+  if (url.includes("/api/timedtext") || url.includes("timedtext?")) {
+    xhr.addEventListener("load", () => {
+      const videoId = new URLSearchParams(window.location.search).get("v") ?? "";
+      const text = xhr.responseText ?? "";
+      console.log(`${LOG} Intercepted timedtext XHR: ${text.length} chars`);
+      const segments = parseTimedTextResponse(text);
+      if (segments.length > 0) {
+        emitSegments(videoId, segments);
+      }
+    });
+  }
+
+  return originalXhrSend.apply(this, args);
+};
+
+console.log(`${LOG} Fetch/XHR intercept installed`);
+
+// 이미 자막이 로드된 경우를 위해, 수동으로 자막 활성화 시도
+setTimeout(() => {
+  const videoId = new URLSearchParams(window.location.search).get("v");
+  if (!videoId) return;
+
+  if (capturedSegments.length > 0) return; // 이미 캡처됨
+
+  // YouTube player에게 자막을 켜달라고 요청
+  try {
+    const player = document.querySelector("#movie_player") as HTMLElement & {
+      loadModule?: (m: string) => void;
+      getOption?: (m: string, o: string) => unknown;
+      setOption?: (m: string, o: string, v: unknown) => void;
+    };
+
+    player?.loadModule?.("captions");
+    const tracks = player?.getOption?.("captions", "tracklist") as
+      | { languageCode: string }[]
+      | undefined;
+
+    if (tracks?.length) {
+      console.log(`${LOG} Triggering caption reload for ${tracks[0]?.languageCode}`);
+      // 트랙을 null로 설정했다가 다시 켜면 YouTube가 timedtext를 다시 fetch함
+      player?.setOption?.("captions", "track", {});
+      setTimeout(() => {
+        player?.setOption?.("captions", "track", tracks[0]);
+      }, 200);
+    }
+  } catch (e) {
+    console.warn(`${LOG} Caption trigger failed:`, e);
+  }
+}, 3000);
