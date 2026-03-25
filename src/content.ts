@@ -1,5 +1,6 @@
 import { SubtitleOverlay } from "./overlay";
 import { getCached, setCached } from "./cache";
+import { mergeIntoSentences } from "./sentence-merger";
 import type { ExtensionMessage, TranscriptSegment, Settings } from "./types";
 
 /**
@@ -34,7 +35,10 @@ window.addEventListener("message", async (event: MessageEvent) => {
   }
 
   currentVideoId = videoId;
-  segments = extracted;
+  // 문장 단위로 병합: 2731 raw segments → ~800 sentences
+  const sentences = mergeIntoSentences(extracted);
+  console.log(`${LOG} Merged ${extracted.length} raw → ${sentences.length} sentences`);
+  segments = sentences;
 
   await waitForPlayer();
   if (!overlay) overlay = new SubtitleOverlay();
@@ -56,11 +60,11 @@ window.addEventListener("message", async (event: MessageEvent) => {
 
   const video = document.querySelector("video.html5-main-video") as HTMLVideoElement | null;
   const currentTimeMs = Math.round((video?.currentTime ?? 0) * 1000);
-  console.log(`${LOG} Requesting translation for ${videoId} (${segments.length} segments, from ${currentTimeMs}ms)`);
+  console.log(`${LOG} Requesting translation for ${videoId} (${sentences.length} sentences, from ${currentTimeMs}ms)`);
   chrome.runtime.sendMessage({
     type: "TRANSCRIPT_READY",
     videoId,
-    segments: extracted,
+    segments: sentences,
     currentTimeMs,
   } as ExtensionMessage).catch((e) => {
     console.warn(`${LOG} sendMessage failed:`, e);

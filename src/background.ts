@@ -7,7 +7,7 @@ import type { ExtensionMessage, Settings, TranscriptSegment } from "./types";
  * Smart batch ordering: 현재 재생 위치 → 앞(미래) → 뒤(과거) 순서로 번역.
  */
 
-const BATCH_SIZE = 15;
+const BATCH_SIZE = 20; // 문장 단위 병합 후이므로 더 큰 batch 가능
 const CONTEXT_WINDOW = 3;
 
 let client: AgentClient | null = null;
