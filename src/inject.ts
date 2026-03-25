@@ -27,7 +27,11 @@ interface CaptionTrack {
 
 let capturedSegments: Segment[] = [];
 let lastVideoId = "";
-let primaryRunDone = false; // run() 완료 전에는 intercept emit 차단
+let primaryRunDone = false;
+
+function getVideoId(): string {
+  return new URLSearchParams(window.location.search).get("v") ?? "";
+}
 
 /** MAIN world -> ISOLATED world -> background debug log. */
 function dbg(msg: string): void {
@@ -186,7 +190,7 @@ window.fetch = async function (...args) {
       const clone = resp.clone();
       const text = await clone.text();
       dbg(`Intercepted timedtext fetch: ${text.length} chars`);
-      const videoId = new URLSearchParams(window.location.search).get("v") ?? "";
+      const videoId = getVideoId();
       const segs = parseJson3(text);
       if (segs.length > 0) emit(videoId, segs);
     } catch { /* ignore */ }
@@ -207,7 +211,7 @@ XMLHttpRequest.prototype.send = function (...args) {
     xhr.addEventListener("load", () => {
       const text = xhr.responseText ?? "";
       dbg(`Intercepted timedtext XHR: ${text.length} chars (${xhrUrl.match(/lang=([^&]*)/)?.[1] ?? "?"})`);
-      const videoId = new URLSearchParams(window.location.search).get("v") ?? "";
+      const videoId = getVideoId();
       const segs = parseJson3(text);
       if (segs.length > 0) emit(videoId, segs);
     });
@@ -220,7 +224,7 @@ dbg("Intercept installed");
 // ─── Main ────────────────────────────────────────────────
 
 async function run(): Promise<void> {
-  const videoId = new URLSearchParams(window.location.search).get("v");
+  const videoId = getVideoId();
   if (!videoId) return;
 
   if (videoId === lastVideoId && capturedSegments.length > 0) {

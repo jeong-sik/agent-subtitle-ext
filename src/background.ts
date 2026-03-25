@@ -1,4 +1,5 @@
 import { AgentClient } from "./agent-client";
+import { DEFAULT_SETTINGS } from "./types";
 import type { DebugEntry, ExtensionMessage, Settings, TranscriptSegment } from "./types";
 
 /**
@@ -16,37 +17,29 @@ let client: AgentClient | null = null;
 let translatingVideoId: string | null = null;
 const debugLog: DebugEntry[] = [];
 
-function dbg(msg: string): void {
-  const entry: DebugEntry = { ts: Date.now(), msg };
+function appendDebugEntry(entry: DebugEntry): void {
   debugLog.push(entry);
   if (debugLog.length > DEBUG_LOG_MAX) debugLog.shift();
+}
+
+function dbg(msg: string): void {
+  appendDebugEntry({ ts: Date.now(), msg });
   console.log(`[Subtitle] ${msg}`);
 }
 
-async function getClient(): Promise<AgentClient> {
-  const settings = await getSettings();
+function getSettings(): Promise<Settings> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(DEFAULT_SETTINGS, (result) => {
+      resolve(result as Settings);
+    });
+  });
+}
+
+function ensureClient(settings: Settings): AgentClient {
   if (!client) {
     client = new AgentClient(settings.agentUrl, settings.apiKey, settings.model);
   }
   return client;
-}
-
-function getSettings(): Promise<Settings> {
-  const defaults: Settings = {
-    agentUrl: "http://127.0.0.1:8085",
-    apiKey: "",
-    model: "auto",
-    targetLang: "ko",
-    showDualSubtitles: true,
-    fontSize: 18,
-    overlayPosition: "bottom",
-  };
-
-  return new Promise((resolve) => {
-    chrome.storage.local.get(defaults, (result) => {
-      resolve(result as Settings);
-    });
-  });
 }
 
 function broadcastToTabs(message: ExtensionMessage): void {
@@ -65,7 +58,6 @@ function sendToTab(tabId: number, message: ExtensionMessage): void {
 
 /**
  * Segments를 현재 재생 위치 기준으로 batch 단위로 재배열.
- *
  * 순서: 현재 위치 batch -> 앞으로(미래) -> 처음부터(과거)
  */
 function reorderBatches(
@@ -99,10 +91,11 @@ async function runBatchTranslation(
   videoId: string,
   segments: TranscriptSegment[],
   targetLang: string,
-  currentTimeMs: number
+  currentTimeMs: number,
+  settings: Settings
 ): Promise<void> {
   translatingVideoId = videoId;
-  const agent = await getClient();
+  const agent = ensureClient(settings);
 
   broadcastToTabs({ type: "STATUS_UPDATE", status: "translating" });
 
@@ -125,15 +118,11 @@ async function runBatchTranslation(
     try {
       const result = await agent.translateBatchStream(
         videoId, batch, "en", targetLang, contextBefore,
-        // onSegment: 줄이 완성될 때마다 즉시 tab에 전달
         (index, translatedText) => {
           const original = segments[index];
-          if (original) {
-            original.translated = translatedText;
-          }
+          if (original) original.translated = translatedText;
           streamedCount++;
 
-          // 개별 segment를 즉시 전달 (streaming UX)
           sendToTab(tabId, {
             type: "TRANSLATION_UPDATE",
             videoId,
@@ -142,7 +131,7 @@ async function runBatchTranslation(
         }
       );
 
-      // streaming 콜백에서 이미 처리하지 못한 segment가 있으면 batch로 보냄
+      // streaming에서 놓친 segment가 있으면 batch로 전달
       const unstreamedSegs = result.segments.filter(
         (seg) => !segments[seg.index]?.translated
       );
@@ -158,7 +147,6 @@ async function runBatchTranslation(
         });
       }
 
-      // context window 갱신
       for (const seg of result.segments) {
         const original = segments[seg.index];
         if (original) translated.push(original);
@@ -191,14 +179,13 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     getSettings().then((settings) => {
       dbg(`Agent: ${settings.agentUrl} model=${settings.model} lang=${settings.targetLang}`);
       runBatchTranslation(
-        sender.tab!.id!, message.videoId, message.segments, settings.targetLang, currentTimeMs
+        sender.tab!.id!, message.videoId, message.segments, settings.targetLang, currentTimeMs, settings
       ).catch(console.error);
     });
   }
 
   if (message.type === "DEBUG_LOG") {
-    debugLog.push(message.entry);
-    if (debugLog.length > DEBUG_LOG_MAX) debugLog.shift();
+    appendDebugEntry(message.entry);
   }
 
   if (message.type === "GET_DEBUG_LOG") {
@@ -215,9 +202,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
 chrome.storage.onChanged.addListener((changes) => {
   if (changes["agentUrl"] || changes["apiKey"] || changes["model"]) {
     getSettings().then((s) => {
-      if (client) {
-        client.setConfig(s.agentUrl, s.apiKey, s.model);
-      }
+      if (client) client.setConfig(s.agentUrl, s.apiKey, s.model);
     });
   }
 });

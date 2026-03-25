@@ -6,15 +6,20 @@ import type { TranscriptSegment, TranslateResponse } from "./types";
  * /v1/chat/completions 를 말하는 아무 백엔드에 번역을 요청한다.
  * llama-server, OpenAI, MASC proxy, OAS — 전부 동작.
  *
- * 두 가지 모드:
- * - translateBatch(): 전체 응답을 한 번에 받음 (fallback)
- * - translateBatchStream(): SSE stream으로 토큰 단위 수신, 줄 완성 시 즉시 콜백
+ * SSE stream으로 토큰 단위 수신, 줄 완성 시 즉시 콜백.
+ * 서버가 streaming을 무시하면 JSON fallback으로 자동 전환.
  */
 
 const REQUEST_TIMEOUT_MS = 120_000;
+const SEGMENT_LINE_RE = /^\[(\d+)\]\s*(.+)$/;
 
-/** 스트리밍 중 완성된 번역 한 줄이 파싱될 때마다 호출. */
 export type OnSegmentTranslated = (index: number, translated: string) => void;
+
+function tryParseSegmentLine(line: string): { index: number; translated: string } | null {
+  const match = line.match(SEGMENT_LINE_RE);
+  if (!match?.[1] || !match[2]) return null;
+  return { index: parseInt(match[1], 10), translated: match[2].trim() };
+}
 
 export class AgentClient {
   private baseUrl: string;
@@ -44,58 +49,11 @@ export class AgentClient {
     }
   }
 
-  /** Non-streaming batch translation (fallback). */
-  async translateBatch(
-    videoId: string,
-    segments: readonly TranscriptSegment[],
-    sourceLang: string,
-    targetLang: string,
-    contextBefore?: readonly TranscriptSegment[]
-  ): Promise<TranslateResponse> {
-    const prompt = buildPrompt(segments, sourceLang, targetLang, contextBefore);
-    const headers = this.buildHeaders();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    const t0 = Date.now();
-
-    try {
-      const resp = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          model: this.model,
-          messages: [{ role: "user", content: prompt }],
-          max_tokens: 2048,
-          temperature: 0.3,
-        }),
-        signal: controller.signal,
-      });
-
-      if (!resp.ok) {
-        throw new Error(`Agent ${resp.status}: ${resp.statusText}`);
-      }
-
-      const data = (await resp.json()) as {
-        choices: { message: { content: string } }[];
-        usage?: { completion_tokens?: number; total_tokens?: number };
-      };
-
-      const elapsed_ms = Date.now() - t0;
-      const tokens = data.usage?.completion_tokens ?? 0;
-      const content = data.choices[0]?.message?.content ?? "";
-      const result = parseResponse(videoId, segments, content);
-      return { ...result, elapsed_ms, tokens };
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
   /**
    * SSE streaming batch translation.
    *
-   * `stream: true`로 요청하여 토큰 단위로 수신.
+   * `stream: true`로 요청. 서버가 JSON으로 응답하면 자동 fallback.
    * `[index] translated text` 줄이 완성될 때마다 onSegment 콜백 호출.
-   * 서버가 streaming을 지원하지 않으면 non-streaming fallback.
    */
   async translateBatchStream(
     videoId: string,
@@ -146,11 +104,10 @@ export class AgentClient {
         };
       }
 
-      // SSE stream 파싱
-      const { content, tokens } = await readSSEStream(resp, onSegment);
+      // SSE stream — segments are collected during streaming via onSegment
+      const { segments: streamed, tokens } = await readSSEStream(resp, onSegment);
       const elapsed_ms = Date.now() - t0;
-      const result = parseResponse(videoId, segments, content);
-      return { ...result, elapsed_ms, tokens };
+      return { video_id: videoId, segments: streamed, elapsed_ms, tokens };
     } finally {
       clearTimeout(timeout);
     }
@@ -166,17 +123,14 @@ export class AgentClient {
 // --- SSE stream reader ---
 
 interface SSEResult {
-  content: string;
+  segments: readonly { index: number; translated: string }[];
   tokens: number;
 }
 
 /**
  * OpenAI SSE 스트림을 읽어서 토큰을 누적한다.
- *
- * 각 SSE 이벤트:
- *   data: {"choices":[{"delta":{"content":"tok"}}]}\n\n
- *
  * `[index] translated text\n` 패턴이 완성될 때마다 onSegment 콜백 호출.
+ * segments를 직접 수집하여 반환 (double-parse 방지).
  */
 async function readSSEStream(
   resp: Response,
@@ -184,14 +138,14 @@ async function readSSEStream(
 ): Promise<SSEResult> {
   const reader = resp.body?.getReader();
   if (!reader) {
-    return { content: "", tokens: 0 };
+    return { segments: [], tokens: 0 };
   }
 
   const decoder = new TextDecoder();
-  let sseBuffer = "";      // SSE 프레임 파싱용 버퍼
-  let contentBuffer = "";  // 누적된 전체 content
-  let lineBuffer = "";     // 현재 줄 누적 (줄바꿈 전까지)
+  let sseBuffer = "";
+  let lineBuffer = "";
   let tokens = 0;
+  const segments: { index: number; translated: string }[] = [];
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -199,16 +153,13 @@ async function readSSEStream(
 
     sseBuffer += decoder.decode(value, { stream: true });
 
-    // SSE 이벤트는 `\n\n`로 구분
     const events = sseBuffer.split("\n\n");
-    // 마지막은 아직 불완전할 수 있으므로 보존
     sseBuffer = events.pop() ?? "";
 
     for (const event of events) {
       for (const rawLine of event.split("\n")) {
         if (!rawLine.startsWith("data: ")) continue;
         const payload = rawLine.slice(6);
-
         if (payload === "[DONE]") continue;
 
         try {
@@ -220,42 +171,40 @@ async function readSSEStream(
           const delta = chunk.choices?.[0]?.delta?.content;
           if (delta == null) continue;
 
-          tokens++;
-          contentBuffer += delta;
           lineBuffer += delta;
 
-          // 줄바꿈이 있으면 완성된 줄 파싱
           while (lineBuffer.includes("\n")) {
             const nlIdx = lineBuffer.indexOf("\n");
             const completedLine = lineBuffer.slice(0, nlIdx);
             lineBuffer = lineBuffer.slice(nlIdx + 1);
 
-            const match = completedLine.match(/^\[(\d+)\]\s*(.+)$/);
-            if (match?.[1] && match[2]) {
-              onSegment(parseInt(match[1], 10), match[2].trim());
+            const parsed = tryParseSegmentLine(completedLine);
+            if (parsed) {
+              segments.push(parsed);
+              onSegment(parsed.index, parsed.translated);
             }
           }
 
-          // usage 정보가 있으면 업데이트
           if (chunk.usage?.completion_tokens) {
             tokens = chunk.usage.completion_tokens;
           }
         } catch {
-          // JSON 파싱 실패 — 무시 (불완전 프레임)
+          // incomplete JSON frame
         }
       }
     }
   }
 
-  // 마지막 남은 줄 처리
+  // 마지막 남은 줄
   if (lineBuffer.trim()) {
-    const match = lineBuffer.match(/^\[(\d+)\]\s*(.+)$/);
-    if (match?.[1] && match[2]) {
-      onSegment(parseInt(match[1], 10), match[2].trim());
+    const parsed = tryParseSegmentLine(lineBuffer);
+    if (parsed) {
+      segments.push(parsed);
+      onSegment(parsed.index, parsed.translated);
     }
   }
 
-  return { content: contentBuffer, tokens };
+  return { segments, tokens };
 }
 
 // --- Prompt & Response parsing ---
@@ -293,13 +242,8 @@ function parseResponse(
   const translated: { index: number; translated: string }[] = [];
 
   for (const line of lines) {
-    const match = line.match(/^\[(\d+)\]\s*(.+)$/);
-    if (match?.[1] && match[2]) {
-      translated.push({
-        index: parseInt(match[1], 10),
-        translated: match[2].trim(),
-      });
-    }
+    const parsed = tryParseSegmentLine(line);
+    if (parsed) translated.push(parsed);
   }
 
   if (translated.length === 0 && lines.length === originalSegments.length) {
