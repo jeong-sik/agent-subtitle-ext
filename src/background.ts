@@ -4,8 +4,7 @@ import type { ExtensionMessage, Settings, TranscriptSegment } from "./types";
 /**
  * Background service worker (Manifest V3).
  *
- * OpenAI-compatible agent endpoint에 번역 요청.
- * 뒤에 뭐가 있는지 모름 — llama-server든 MASC keeper든 Cloud API든.
+ * Smart batch ordering: 현재 재생 위치 → 앞(미래) → 뒤(과거) 순서로 번역.
  */
 
 const BATCH_SIZE = 15;
@@ -54,11 +53,46 @@ function sendToTab(tabId: number, message: ExtensionMessage): void {
   chrome.tabs.sendMessage(tabId, message).catch(() => {});
 }
 
+/**
+ * Segments를 현재 재생 위치 기준으로 batch 단위로 재배열.
+ *
+ * 순서: 현재 위치 batch → 앞으로(미래) → 처음부터(과거)
+ * 사용자가 30분에 있으면 30분부터 번역 시작, 끝까지 간 후 0분부터.
+ */
+function reorderBatches(
+  segments: TranscriptSegment[],
+  currentTimeMs: number
+): number[] {
+  const totalBatches = Math.ceil(segments.length / BATCH_SIZE);
+  if (totalBatches === 0) return [];
+
+  // 현재 시간에 해당하는 segment 찾기
+  let startSegIdx = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (seg && seg.start_ms >= currentTimeMs) {
+      startSegIdx = i;
+      break;
+    }
+    startSegIdx = i;
+  }
+
+  const startBatch = Math.floor(startSegIdx / BATCH_SIZE);
+
+  // startBatch → end, then 0 → startBatch
+  const order: number[] = [];
+  for (let i = startBatch; i < totalBatches; i++) order.push(i);
+  for (let i = 0; i < startBatch; i++) order.push(i);
+
+  return order;
+}
+
 async function runBatchTranslation(
   tabId: number,
   videoId: string,
   segments: TranscriptSegment[],
-  targetLang: string
+  targetLang: string,
+  currentTimeMs: number
 ): Promise<void> {
   translatingVideoId = videoId;
   const agent = await getClient();
@@ -66,11 +100,17 @@ async function runBatchTranslation(
   broadcastToTabs({ type: "STATUS_UPDATE", status: "translating" });
 
   const translated: TranscriptSegment[] = [];
+  const batchOrder = reorderBatches(segments, currentTimeMs);
+  const totalBatches = batchOrder.length;
 
-  for (let i = 0; i < segments.length; i += BATCH_SIZE) {
+  console.log(`[Subtitle] ${totalBatches} batches, starting near ${Math.round(currentTimeMs / 1000)}s`);
+
+  for (let step = 0; step < totalBatches; step++) {
     if (translatingVideoId !== videoId) break;
 
-    const batch = segments.slice(i, i + BATCH_SIZE);
+    const batchIdx = batchOrder[step]!;
+    const start = batchIdx * BATCH_SIZE;
+    const batch = segments.slice(start, start + BATCH_SIZE);
     const contextBefore = translated.slice(-CONTEXT_WINDOW);
 
     try {
@@ -92,9 +132,9 @@ async function runBatchTranslation(
         segments: [...result.segments],
       });
 
-      console.log(`[Subtitle] Batch ${i / BATCH_SIZE + 1}: ${result.segments.length} segments`);
+      console.log(`[Subtitle] Batch ${step + 1}/${totalBatches} (seg ${start}): ${result.segments.length} translated`);
     } catch (e) {
-      console.error(`[Subtitle] Batch ${i} failed:`, e);
+      console.error(`[Subtitle] Batch ${start} failed:`, e);
     }
   }
 
@@ -107,9 +147,10 @@ async function runBatchTranslation(
 
 chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendResponse) => {
   if (message.type === "TRANSCRIPT_READY" && sender.tab?.id != null) {
+    const currentTimeMs = message.currentTimeMs ?? 0;
     getSettings().then((settings) => {
       runBatchTranslation(
-        sender.tab!.id!, message.videoId, message.segments, settings.targetLang
+        sender.tab!.id!, message.videoId, message.segments, settings.targetLang, currentTimeMs
       ).catch(console.error);
     });
   }

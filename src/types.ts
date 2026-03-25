@@ -53,7 +53,7 @@ export interface JsonRpcResponse {
 
 /** Extension internal messages between content script and background. */
 export type ExtensionMessage =
-  | { type: "TRANSCRIPT_READY"; videoId: string; segments: TranscriptSegment[] }
+  | { type: "TRANSCRIPT_READY"; videoId: string; segments: TranscriptSegment[]; currentTimeMs?: number }
   | { type: "TRANSLATE_REQUEST"; videoId: string; targetLang: string }
   | { type: "TRANSLATION_UPDATE"; videoId: string; segments: { index: number; translated: string }[] }
   | { type: "TRANSLATION_COMPLETE"; videoId: string }
