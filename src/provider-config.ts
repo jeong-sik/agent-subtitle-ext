@@ -6,12 +6,21 @@ export interface ProviderDefinition {
   label: string;
   defaultUrl: string;
   authModes: AuthMode[];
-  endpointKind: "openai" | "anthropic";
+  endpointKind: "openai" | "anthropic" | "chrome-builtin";
   modelPlaceholder: string;
   authHelpText: string;
 }
 
 export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
+  "chrome-builtin": {
+    id: "chrome-builtin",
+    label: "Chrome Built-in (no key)",
+    defaultUrl: "",
+    authModes: ["apiKey"],
+    endpointKind: "chrome-builtin",
+    modelPlaceholder: "Gemini Nano (on-device)",
+    authHelpText: "Uses Chrome's built-in Translator API. No API key needed. Chrome 138+ required.",
+  },
   custom: {
     id: "custom",
     label: "Custom / Local",
@@ -86,7 +95,7 @@ export function getResolvedBaseUrl(settings: Settings): string {
 
 export function requiresCredential(settings: Settings): boolean {
   const normalized = normalizeSettings(settings);
-  if (normalized.provider === "custom") {
+  if (normalized.provider === "custom" || normalized.provider === "chrome-builtin") {
     return false;
   }
   if (normalized.provider === "gemini" && normalized.authMode === "oauth") {
@@ -97,7 +106,7 @@ export function requiresCredential(settings: Settings): boolean {
 
 export function hasUsableCredential(settings: Settings): boolean {
   const normalized = normalizeSettings(settings);
-  if (normalized.provider === "custom") {
+  if (normalized.provider === "custom" || normalized.provider === "chrome-builtin") {
     return true;
   }
   if (normalized.provider === "gemini" && normalized.authMode === "oauth") {

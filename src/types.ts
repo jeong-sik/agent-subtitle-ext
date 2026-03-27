@@ -24,7 +24,7 @@ export interface DebugEntry {
   readonly msg: string;
 }
 
-export type ProviderId = "custom" | "openai" | "gemini" | "claude";
+export type ProviderId = "chrome-builtin" | "custom" | "openai" | "gemini" | "claude";
 export type AuthMode = "apiKey" | "oauth";
 
 export interface OAuthSession {
@@ -82,7 +82,7 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  provider: "custom",
+  provider: "chrome-builtin",
   authMode: "apiKey",
   agentUrl: "http://127.0.0.1:8085",
   apiKey: "",

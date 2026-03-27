@@ -118,6 +118,102 @@ function reorderBatches(
   return order;
 }
 
+// Chrome Built-in Translator API type declarations
+declare const translation: {
+  createTranslator(options: { sourceLanguage: string; targetLanguage: string }): Promise<{
+    translate(text: string): Promise<string>;
+  }>;
+} | undefined;
+
+/** Translate segments using Chrome's on-device Translator API (Gemini Nano). */
+async function runChromeBuiltinTranslation(
+  tabId: number,
+  videoId: string,
+  segments: TranscriptSegment[],
+  targetLang: string,
+  currentTimeMs: number,
+  settings: Settings,
+): Promise<void> {
+  translatingVideoId = videoId;
+  broadcastToTabs({ type: "STATUS_UPDATE", status: "translating" });
+
+  if (typeof translation === "undefined") {
+    dbg("Chrome Translator API not available. Chrome 138+ required.");
+    broadcastToTabs({ type: "STATUS_UPDATE", status: "disconnected" });
+    translatingVideoId = null;
+    return;
+  }
+
+  let translator: { translate(text: string): Promise<string> };
+  try {
+    translator = await translation.createTranslator({ sourceLanguage: "en", targetLanguage: targetLang });
+  } catch (e) {
+    dbg(`Chrome Translator init failed: ${e}. Language pair may not be available.`);
+    broadcastToTabs({ type: "STATUS_UPDATE", status: "disconnected" });
+    translatingVideoId = null;
+    return;
+  }
+
+  const runStartMs = Date.now();
+  const batchOrder = reorderBatches(segments, currentTimeMs);
+  const totalSegments = segments.length;
+  let translatedCount = 0;
+
+  dbg(`Chrome Built-in: ${totalSegments} segments, starting near ${Math.round(currentTimeMs / 1000)}s`);
+
+  for (const batchIdx of batchOrder) {
+    if (translatingVideoId !== videoId) break;
+    const start = batchIdx * BATCH_SIZE;
+    const batch = segments.slice(start, start + BATCH_SIZE);
+
+    for (const seg of batch) {
+      if (translatingVideoId !== videoId) break;
+      try {
+        const translated = await translator.translate(seg.text);
+        seg.translated = translated;
+        translatedCount++;
+
+        sendToTab(tabId, {
+          type: "TRANSLATION_UPDATE",
+          videoId,
+          segments: [{ index: seg.index, translated }],
+        });
+      } catch {
+        // Skip failed segments
+      }
+    }
+
+    currentProgress = buildProgressForChromeBuiltin(videoId, segments, translatedCount, totalSegments, runStartMs, false);
+    chrome.runtime.sendMessage({ type: "PROGRESS_UPDATE", videoId, progress: currentProgress } as ExtensionMessage).catch(() => {});
+
+    dbg(`Chrome Built-in: ${translatedCount}/${totalSegments} segments translated`);
+  }
+
+  if (translatingVideoId === videoId) {
+    const wallTimeS = ((Date.now() - runStartMs) / 1000).toFixed(1);
+    dbg(`[Summary] ${translatedCount}/${totalSegments} segs, ${wallTimeS}s wall, chrome-builtin -> ${targetLang}`);
+
+    currentProgress = buildProgressForChromeBuiltin(videoId, segments, translatedCount, totalSegments, runStartMs, true);
+    chrome.runtime.sendMessage({ type: "PROGRESS_UPDATE", videoId, progress: currentProgress } as ExtensionMessage).catch(() => {});
+
+    sendToTab(tabId, { type: "TRANSLATION_COMPLETE", videoId });
+    broadcastToTabs({ type: "STATUS_UPDATE", status: "connected" });
+    translatingVideoId = null;
+  }
+}
+
+function buildProgressForChromeBuiltin(
+  videoId: string, segments: TranscriptSegment[], translatedCount: number,
+  totalSegments: number, runStartMs: number, isComplete: boolean,
+): TranslationProgress {
+  return {
+    videoId, totalSegments, translatedSegments: translatedCount,
+    completedBatches: Math.ceil(translatedCount / BATCH_SIZE),
+    totalBatches: Math.ceil(totalSegments / BATCH_SIZE),
+    totalTokens: 0, wallStartMs: runStartMs, currentTokPerSec: 0, isComplete,
+  };
+}
+
 async function runBatchTranslation(
   tabId: number,
   videoId: string,
@@ -126,6 +222,11 @@ async function runBatchTranslation(
   currentTimeMs: number,
   settings: Settings
 ): Promise<void> {
+  // Chrome Built-in Translator: separate path (no HTTP, on-device)
+  if (settings.provider === "chrome-builtin") {
+    return runChromeBuiltinTranslation(tabId, videoId, segments, targetLang, currentTimeMs, settings);
+  }
+
   translatingVideoId = videoId;
   let preparedSettings: Settings;
   try {
