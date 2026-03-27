@@ -1,4 +1,5 @@
 import { AgentClient } from "./agent-client";
+import { clearAllCache } from "./cache";
 import { ensureGeminiOAuthSession } from "./google-oauth";
 import { hasUsableCredential } from "./provider-config";
 import { loadStoredSettings, saveOAuthSession } from "./settings-store";
@@ -311,6 +312,19 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
         chrome.sidePanel?.open({ windowId }).catch(console.error);
       }
     });
+  }
+
+  if (message.type === "CLEAR_CACHE") {
+    clearAllCache()
+      .then((count) => {
+        dbg(`Cache cleared: ${count} entries`);
+        sendResponse({ cleared: count });
+      })
+      .catch((err) => {
+        dbg(`Cache clear failed: ${err}`);
+        sendResponse({ cleared: 0, error: String(err) });
+      });
+    return true;
   }
 
   if (message.type === "GET_STATUS") {

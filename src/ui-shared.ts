@@ -385,6 +385,20 @@ export async function initSharedUI(): Promise<void> {
     handleGeminiOAuthDisconnect().catch(console.error);
   });
 
+  $("clear-cache-btn")?.addEventListener("click", () => {
+    const btn = $("clear-cache-btn") as HTMLButtonElement | null;
+    if (btn) btn.disabled = true;
+    chrome.runtime.sendMessage({ type: "CLEAR_CACHE" }, (response) => {
+      if (btn) {
+        btn.textContent = `Cleared ${response?.cleared ?? 0} entries`;
+        setTimeout(() => {
+          btn.textContent = btn.id === "clear-cache-btn" ? "Clear Cache" : "Clear Translation Cache";
+          btn.disabled = false;
+        }, 2000);
+      }
+    });
+  });
+
   // Shared STATUS_UPDATE listener (popup + side panel both need this)
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === "STATUS_UPDATE") {
