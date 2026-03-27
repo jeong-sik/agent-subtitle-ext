@@ -141,11 +141,14 @@ async function runBatchTranslation(
   const translated: TranscriptSegment[] = [];
   const batchOrder = reorderBatches(segments, currentTimeMs);
   const totalBatches = batchOrder.length;
+  const runStartMs = Date.now();
 
   dbg(`${totalBatches} batches (x${Math.min(CONCURRENCY, totalBatches)} parallel), starting near ${Math.round(currentTimeMs / 1000)}s`);
 
   let nextStep = 0;
   let completedBatches = 0;
+  let totalTokens = 0;
+  let totalElapsedMs = 0;
 
   const processNext = async (): Promise<void> => {
     while (nextStep < totalBatches) {
@@ -198,6 +201,8 @@ async function runBatchTranslation(
         }
 
         completedBatches++;
+        totalTokens += result.tokens ?? 0;
+        totalElapsedMs += result.elapsed_ms ?? 0;
         const tokS = result.elapsed_ms && result.tokens
           ? `${(result.tokens / (result.elapsed_ms / 1000)).toFixed(1)} tok/s`
           : "";
@@ -221,6 +226,20 @@ async function runBatchTranslation(
   );
 
   if (translatingVideoId === videoId) {
+    const wallTimeS = ((Date.now() - runStartMs) / 1000).toFixed(1);
+    const translatedCount = segments.filter(s => s.translated).length;
+    const avgTokS = totalElapsedMs > 0 && totalTokens > 0
+      ? `${(totalTokens / (totalElapsedMs / 1000)).toFixed(1)} tok/s`
+      : "n/a";
+    const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency ?? "?" : "?";
+    dbg(
+      `[Summary] ${translatedCount}/${segments.length} segs, ` +
+      `${completedBatches} batches (x${Math.min(CONCURRENCY, totalBatches)}), ` +
+      `${wallTimeS}s wall, ${avgTokS} avg, ` +
+      `${preparedSettings.provider}/${preparedSettings.model} -> ${targetLang}, ` +
+      `cores:${cores}`
+    );
+
     sendToTab(tabId, { type: "TRANSLATION_COMPLETE", videoId });
     broadcastToTabs({ type: "STATUS_UPDATE", status: getConnectionStatus(preparedSettings) });
     translatingVideoId = null;
