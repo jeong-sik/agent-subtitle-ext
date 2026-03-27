@@ -58,7 +58,8 @@ export type ExtensionMessage =
   | { type: "GET_DEBUG_LOG" }
   | { type: "DEBUG_LOG_PUSH"; entry: DebugEntry }
   | { type: "PROGRESS_UPDATE"; videoId: string; progress: TranslationProgress }
-  | { type: "GET_PROGRESS" };
+  | { type: "GET_PROGRESS" }
+  | { type: "OPEN_SIDE_PANEL" };
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "translating";
 
