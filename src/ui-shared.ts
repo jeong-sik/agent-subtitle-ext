@@ -247,9 +247,11 @@ export function renderForm(settings: Settings): void {
   if (authField) authField.style.display = isBuiltin ? "none" : "";
 
   if (urlInput) {
-    urlInput.value = settings.provider === "custom" ? settings.agentUrl : provider.defaultUrl;
+    // Show user-customized URL if it differs from default; otherwise show default
+    const userUrl = settings.agentUrl;
+    const isDefault = !userUrl || userUrl === provider.defaultUrl;
+    urlInput.value = isDefault ? provider.defaultUrl : userUrl;
     urlInput.placeholder = provider.defaultUrl;
-    urlInput.readOnly = settings.provider !== "custom";
   }
   if (apiKeyInput) {
     apiKeyInput.placeholder = settings.provider === "claude"
@@ -280,9 +282,7 @@ export function collectSettingsFromForm(): Settings {
     ...currentSettings,
     provider,
     authMode: providerDef.authModes.includes(authMode) ? authMode : providerDef.authModes[0]!,
-    agentUrl: provider === "custom"
-      ? (($("ws-url") as HTMLInputElement | null)?.value ?? currentSettings.agentUrl)
-      : providerDef.defaultUrl,
+    agentUrl: (($("ws-url") as HTMLInputElement | null)?.value?.trim() || providerDef.defaultUrl),
     apiKey: (($("api-key") as HTMLInputElement | null)?.value ?? currentSettings.apiKey).trim(),
     model: (($("model") as HTMLInputElement | null)?.value ?? currentSettings.model).trim(),
     targetLang: (($("target-lang") as HTMLSelectElement | null)?.value ?? currentSettings.targetLang).trim(),
