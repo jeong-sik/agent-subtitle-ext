@@ -20,6 +20,8 @@ function renderProgress(progress: TranslationProgress): void {
   currentProgress = progress;
   const section = $("progress-section");
   const fill = $("progress-bar-fill") as HTMLDivElement | null;
+  const pctEl = $("progress-pct");
+  const badge = $("playable-badge");
   const segCount = $("segment-count");
   const batchCount = $("batch-count");
   const tokSec = $("tok-per-sec");
@@ -27,12 +29,33 @@ function renderProgress(progress: TranslationProgress): void {
 
   if (section) section.classList.add("active");
 
+  const pct = progress.totalSegments > 0
+    ? (progress.translatedSegments / progress.totalSegments) * 100
+    : 0;
+
   if (fill) {
-    const pct = progress.totalSegments > 0
-      ? (progress.translatedSegments / progress.totalSegments) * 100
-      : 0;
     fill.style.width = `${pct.toFixed(1)}%`;
-    fill.classList.toggle("complete", progress.isComplete);
+  }
+
+  if (pctEl) {
+    pctEl.innerHTML = `${Math.round(pct)}<span class="unit">%</span>`;
+  }
+
+  // Playable badge: ready (>30% or complete), buffering (>0%), waiting (0%)
+  if (badge) {
+    if (progress.isComplete) {
+      badge.className = "playable-badge ready";
+      badge.textContent = "complete";
+    } else if (pct >= 30) {
+      badge.className = "playable-badge ready";
+      badge.textContent = "playable";
+    } else if (pct > 0) {
+      badge.className = "playable-badge buffering";
+      badge.textContent = "buffering...";
+    } else {
+      badge.className = "playable-badge waiting";
+      badge.textContent = "waiting";
+    }
   }
 
   if (segCount) segCount.textContent = `${progress.translatedSegments}/${progress.totalSegments} segs`;
