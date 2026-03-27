@@ -125,6 +125,7 @@ async function runBatchTranslation(
   try {
     preparedSettings = await prepareSettingsForRequest(settings);
   } catch (error) {
+    await saveOAuthSession(null);
     dbg(`Auth failed: ${error}`);
     broadcastToTabs({ type: "STATUS_UPDATE", status: "disconnected" });
     translatingVideoId = null;

@@ -12,9 +12,17 @@ export async function loadStoredSettings(): Promise<Settings> {
     chrome.storage.session.get({ [OAUTH_SESSION_KEY]: null }, resolve);
   });
 
+  const rawSession = (session[OAUTH_SESSION_KEY] as OAuthSession | null | undefined) ?? null;
+  const oauthSession = rawSession && rawSession.expiresAt > Date.now()
+    ? rawSession
+    : null;
+  if (rawSession && !oauthSession) {
+    await saveOAuthSession(null);
+  }
+
   return normalizeSettings({
     ...(local as Settings),
-    oauthSession: (session[OAUTH_SESSION_KEY] as OAuthSession | null | undefined) ?? null,
+    oauthSession,
   });
 }
 

@@ -134,7 +134,7 @@ function renderOAuthStatus(settings: Settings): void {
 
   const session = settings.oauthSession;
   if (!session?.accessToken) {
-    status.textContent = "Not connected";
+    status.textContent = "Not connected. Reconnect Gemini OAuth.";
     return;
   }
 
