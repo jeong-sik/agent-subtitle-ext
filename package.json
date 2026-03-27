@@ -2,11 +2,13 @@
   "name": "agent-subtitle-ext",
   "version": "0.7.1",
   "private": true,
+  "packageManager": "pnpm@10.31.0",
   "description": "YouTube AI subtitle translator via any OpenAI-compatible agent",
   "scripts": {
     "build": "node esbuild.config.mjs",
     "watch": "node esbuild.config.mjs --watch",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit --pretty false"
   },
   "devDependencies": {
     "@types/chrome": "^0.1.38",

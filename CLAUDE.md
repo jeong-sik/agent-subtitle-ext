@@ -29,9 +29,9 @@ What runs behind the URL is not the extension's concern.
 ## Build
 
 ```bash
-npm install
-npm run build     # production build -> dist/
-npm run watch     # dev mode with sourcemaps
+pnpm install
+pnpm build        # production build -> dist/
+pnpm watch        # dev mode with sourcemaps
 ```
 
 ## Load in Chrome
