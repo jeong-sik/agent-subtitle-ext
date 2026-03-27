@@ -16,8 +16,15 @@ import type { DebugEntry, TranslationProgress } from "./types";
 let currentProgress: TranslationProgress | null = null;
 let wallTimerInterval: ReturnType<typeof setInterval> | null = null;
 
+function ensureWallTimer(): void {
+  if (!wallTimerInterval) {
+    wallTimerInterval = setInterval(updateWallTime, 1000);
+  }
+}
+
 function renderProgress(progress: TranslationProgress): void {
   currentProgress = progress;
+  if (!progress.isComplete) ensureWallTimer();
   const section = $("progress-section");
   const fill = $("progress-bar-fill") as HTMLDivElement | null;
   const pctEl = $("progress-pct");
