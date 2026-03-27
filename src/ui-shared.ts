@@ -310,6 +310,17 @@ export async function persistForm(): Promise<void> {
   currentSettings = nextSettings;
   await saveStoredSettings(currentSettings);
   renderForm(currentSettings);
+  flashSaved();
+}
+
+let savedTimer: ReturnType<typeof setTimeout> | null = null;
+function flashSaved(): void {
+  const el = $("save-indicator");
+  if (!el) return;
+  el.textContent = "Saved";
+  el.style.opacity = "1";
+  if (savedTimer) clearTimeout(savedTimer);
+  savedTimer = setTimeout(() => { el.style.opacity = "0"; }, 1200);
 }
 
 // --- OAuth ---
