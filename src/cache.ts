@@ -104,6 +104,23 @@ export async function clearCached(
   });
 }
 
+/** 모든 캐시를 삭제한다. */
+export async function clearAllCache(): Promise<number> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    const countReq = store.count();
+    countReq.onsuccess = () => {
+      const count = countReq.result;
+      const clearReq = store.clear();
+      clearReq.onsuccess = () => resolve(count);
+      clearReq.onerror = () => reject(clearReq.error);
+    };
+    countReq.onerror = () => reject(countReq.error);
+  });
+}
+
 /** 30일 이상 된 캐시를 정리한다. */
 export async function pruneOldCache(maxAgeDays = 30): Promise<number> {
   const db = await openDb();
