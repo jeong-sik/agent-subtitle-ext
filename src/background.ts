@@ -13,7 +13,7 @@ import type { DebugEntry, ExtensionMessage, Settings, TranscriptSegment, Transla
  * Parallel batches: CONCURRENCY개 batch를 동시 처리하여 체감 속도 향상.
  */
 
-const BATCH_SIZE = 20;
+const BATCH_SIZE = 10;
 const CONTEXT_WINDOW = 3;
 const CONCURRENCY = 3;
 const DEBUG_LOG_MAX = 50;
