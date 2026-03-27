@@ -1,5 +1,6 @@
 import { connectGeminiOAuth } from "./google-oauth";
 import { getProvider, normalizeSettings } from "./provider-config";
+import { loadStoredSettings, saveOAuthSession, saveStoredSettings } from "./settings-store";
 import { DEFAULT_SETTINGS } from "./types";
 import type {
   AuthMode,
@@ -16,17 +17,13 @@ function $(id: string): HTMLElement | null {
 let currentSettings: Settings = DEFAULT_SETTINGS;
 
 async function loadSettings(): Promise<Settings> {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(DEFAULT_SETTINGS, (result) => {
-      resolve(normalizeSettings(result as Settings));
-    });
-  });
+  return loadStoredSettings();
 }
 
 async function saveSettings(settings: Partial<Settings>): Promise<void> {
-  return new Promise((resolve) => {
-    chrome.storage.local.set(settings, resolve);
-  });
+  const merged = normalizeSettings({ ...currentSettings, ...settings });
+  currentSettings = merged;
+  await saveStoredSettings(merged);
 }
 
 function updateStatusDisplay(status: ConnectionStatus): void {
@@ -216,7 +213,7 @@ function collectSettingsFromForm(): Settings {
 
 async function persistForm(): Promise<void> {
   currentSettings = collectSettingsFromForm();
-  await saveSettings(currentSettings);
+  await saveStoredSettings(currentSettings);
   renderForm(currentSettings);
 }
 
@@ -248,7 +245,8 @@ async function handleGeminiOAuthConnect(): Promise<void> {
       authMode: "oauth",
       oauthSession,
     });
-    await saveSettings(currentSettings);
+    await saveStoredSettings(currentSettings);
+    await saveOAuthSession(oauthSession);
     renderForm(currentSettings);
     await syncStatus();
   } catch (error) {
@@ -265,7 +263,8 @@ async function handleGeminiOAuthDisconnect(): Promise<void> {
     ...collectSettingsFromForm(),
     oauthSession: null,
   });
-  await saveSettings({ oauthSession: null });
+  await saveStoredSettings(currentSettings);
+  await saveOAuthSession(null);
   renderForm(currentSettings);
   await syncStatus();
 }

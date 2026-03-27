@@ -11,6 +11,7 @@ const GEMINI_SCOPES = [
   "https://www.googleapis.com/auth/cloud-platform",
   "https://www.googleapis.com/auth/generative-language.retriever",
 ];
+let inFlightSessionRefresh: Promise<OAuthSession> | null = null;
 
 interface GoogleTokenResponse {
   access_token?: string;
@@ -240,26 +241,38 @@ export async function ensureGeminiOAuthSession(
     return session!;
   }
 
-  if (session?.refreshToken) {
-    try {
-      const payload = await postTokenForm(new URLSearchParams({
-        client_id: trimmedClientId,
-        grant_type: "refresh_token",
-        refresh_token: session.refreshToken,
-      }));
-      return populateEmail(buildSession(payload, session));
-    } catch {
-      // Fall back to a silent browser refresh when refresh_token flow is unavailable.
-    }
+  if (inFlightSessionRefresh) {
+    return inFlightSessionRefresh;
   }
+
+  inFlightSessionRefresh = (async () => {
+    if (session?.refreshToken) {
+      try {
+        const payload = await postTokenForm(new URLSearchParams({
+          client_id: trimmedClientId,
+          grant_type: "refresh_token",
+          refresh_token: session.refreshToken,
+        }));
+        return populateEmail(buildSession(payload, session));
+      } catch {
+        // Fall back to a silent browser refresh when refresh_token flow is unavailable.
+      }
+    }
+
+    try {
+      return await runPkceFlow(trimmedClientId, false);
+    } catch (error) {
+      if (!shouldFallbackToImplicit(error)) {
+        throw error;
+      }
+    }
+
+    return runImplicitFlow(trimmedClientId, false);
+  })();
 
   try {
-    return await runPkceFlow(trimmedClientId, false);
-  } catch (error) {
-    if (!shouldFallbackToImplicit(error)) {
-      throw error;
-    }
+    return await inFlightSessionRefresh;
+  } finally {
+    inFlightSessionRefresh = null;
   }
-
-  return runImplicitFlow(trimmedClientId, false);
 }

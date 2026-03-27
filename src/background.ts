@@ -1,7 +1,7 @@
 import { AgentClient } from "./agent-client";
 import { ensureGeminiOAuthSession } from "./google-oauth";
-import { hasUsableCredential, normalizeSettings } from "./provider-config";
-import { DEFAULT_SETTINGS } from "./types";
+import { hasUsableCredential } from "./provider-config";
+import { loadStoredSettings, saveOAuthSession } from "./settings-store";
 import type { DebugEntry, ExtensionMessage, Settings, TranscriptSegment } from "./types";
 
 /**
@@ -30,11 +30,7 @@ function dbg(msg: string): void {
 }
 
 function getSettings(): Promise<Settings> {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(DEFAULT_SETTINGS, (result) => {
-      resolve(normalizeSettings(result as Settings));
-    });
-  });
+  return loadStoredSettings();
 }
 
 function ensureClient(settings: Settings): AgentClient {
@@ -61,7 +57,7 @@ async function prepareSettingsForRequest(settings: Settings): Promise<Settings> 
   }
 
   const updated = { ...settings, oauthSession };
-  await new Promise<void>((resolve) => chrome.storage.local.set({ oauthSession }, () => resolve()));
+  await saveOAuthSession(oauthSession);
   return updated;
 }
 
@@ -238,7 +234,10 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
   }
 });
 
-chrome.storage.onChanged.addListener((changes) => {
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local" && areaName !== "session") {
+    return;
+  }
   if (
     changes["agentUrl"] ||
     changes["apiKey"] ||

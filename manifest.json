@@ -9,6 +9,9 @@
     "https://youtube.com/*",
     "http://127.0.0.1/*",
     "http://localhost/*",
+    "https://accounts.google.com/*",
+    "https://oauth2.googleapis.com/*",
+    "https://www.googleapis.com/*",
     "https://*/*"
   ],
   "background": {
