@@ -30,8 +30,6 @@ export type AuthMode = "apiKey" | "oauth";
 export interface OAuthSession {
   accessToken: string;
   expiresAt: number;
-  refreshToken?: string;
-  email?: string;
   scope?: string;
 }
 

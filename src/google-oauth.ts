@@ -2,14 +2,9 @@ import type { OAuthSession } from "./types";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-const GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
 const GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 const EXPIRY_SKEW_MS = 60_000;
 const GEMINI_SCOPES = [
-  "openid",
-  "email",
-  "profile",
-  "https://www.googleapis.com/auth/cloud-platform",
   "https://www.googleapis.com/auth/generative-language.retriever",
 ];
 let inFlightSessionRefresh: Promise<OAuthSession> | null = null;
@@ -17,15 +12,10 @@ let inFlightSessionRefresh: Promise<OAuthSession> | null = null;
 interface GoogleTokenResponse {
   access_token?: string;
   expires_in?: number;
-  refresh_token?: string;
   scope?: string;
   token_type?: string;
   error?: string;
   error_description?: string;
-}
-
-interface GoogleUserInfo {
-  email?: string;
 }
 
 function getRedirectUri(): string {
@@ -99,21 +89,7 @@ async function postTokenForm(body: URLSearchParams): Promise<GoogleTokenResponse
   return payload;
 }
 
-async function populateEmail(session: OAuthSession): Promise<OAuthSession> {
-  try {
-    const response = await fetch(GOOGLE_USERINFO_URL, {
-      headers: { Authorization: `Bearer ${session.accessToken}` },
-    });
-    if (!response.ok) return session;
-    const payload = (await response.json()) as GoogleUserInfo;
-    if (!payload.email) return session;
-    return { ...session, email: payload.email };
-  } catch {
-    return session;
-  }
-}
-
-function buildSession(payload: GoogleTokenResponse, fallback?: OAuthSession | null): OAuthSession {
+function buildSession(payload: GoogleTokenResponse): OAuthSession {
   const accessToken = payload.access_token;
   if (!accessToken) {
     throw new Error("OAuth access token was missing");
@@ -122,9 +98,7 @@ function buildSession(payload: GoogleTokenResponse, fallback?: OAuthSession | nu
   return {
     accessToken,
     expiresAt: Date.now() + (payload.expires_in ?? 3600) * 1000,
-    refreshToken: payload.refresh_token || fallback?.refreshToken,
-    email: fallback?.email,
-    scope: payload.scope || fallback?.scope,
+    scope: payload.scope,
   };
 }
 
@@ -145,7 +119,6 @@ async function runPkceFlow(clientId: string, interactive: boolean): Promise<OAut
     code_challenge: challenge,
     code_challenge_method: "S256",
     state,
-    access_type: "offline",
     include_granted_scopes: "true",
     prompt: interactive ? "consent select_account" : "none",
   });
@@ -172,7 +145,7 @@ async function runPkceFlow(clientId: string, interactive: boolean): Promise<OAut
     redirect_uri: redirectUri,
   }));
 
-  return populateEmail(buildSession(payload));
+  return buildSession(payload);
 }
 
 export async function connectGeminiOAuth(clientId: string): Promise<OAuthSession> {
@@ -202,19 +175,6 @@ export async function ensureGeminiOAuthSession(
   }
 
   inFlightSessionRefresh = (async () => {
-    if (session?.refreshToken) {
-      try {
-        const payload = await postTokenForm(new URLSearchParams({
-          client_id: trimmedClientId,
-          grant_type: "refresh_token",
-          refresh_token: session.refreshToken,
-        }));
-        return populateEmail(buildSession(payload, session));
-      } catch {
-        // Fall back to a silent browser refresh when refresh_token flow is unavailable.
-      }
-    }
-
     return runPkceFlow(trimmedClientId, false);
   })();
 
@@ -226,7 +186,7 @@ export async function ensureGeminiOAuthSession(
 }
 
 export async function revokeGeminiOAuthSession(session: OAuthSession | null): Promise<void> {
-  const token = session?.refreshToken || session?.accessToken;
+  const token = session?.accessToken;
   if (!token) return;
 
   try {

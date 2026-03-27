@@ -54,8 +54,7 @@ async function prepareSettingsForRequest(settings: Settings): Promise<Settings> 
   const oauthSession = await ensureGeminiOAuthSession(settings.oauthClientId, settings.oauthSession);
   if (
     settings.oauthSession?.accessToken === oauthSession.accessToken &&
-    settings.oauthSession?.expiresAt === oauthSession.expiresAt &&
-    settings.oauthSession?.email === oauthSession.email
+    settings.oauthSession?.expiresAt === oauthSession.expiresAt
   ) {
     return settings;
   }

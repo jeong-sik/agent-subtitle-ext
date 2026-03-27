@@ -138,8 +138,7 @@ function renderOAuthStatus(settings: Settings): void {
     return;
   }
 
-  const who = session.email ? `Connected as ${session.email}` : "Connected";
-  status.textContent = `${who} • ${formatExpiry(session.expiresAt)}`;
+  status.textContent = `Connected • ${formatExpiry(session.expiresAt)}`;
 }
 
 function renderForm(settings: Settings): void {
