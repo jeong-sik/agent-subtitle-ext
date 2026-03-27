@@ -2,21 +2,24 @@ import { AgentClient } from "./agent-client";
 import { ensureGeminiOAuthSession } from "./google-oauth";
 import { hasUsableCredential } from "./provider-config";
 import { loadStoredSettings, saveOAuthSession } from "./settings-store";
-import type { DebugEntry, ExtensionMessage, Settings, TranscriptSegment } from "./types";
+import type { DebugEntry, ExtensionMessage, Settings, TranscriptSegment, TranslationProgress } from "./types";
 
 /**
  * Background service worker (Manifest V3).
  *
  * Smart batch ordering: 현재 재생 위치 -> 앞(미래) -> 뒤(과거) 순서로 번역.
  * SSE streaming: 줄 단위로 번역 완성 시 즉시 overlay에 전달.
+ * Parallel batches: CONCURRENCY개 batch를 동시 처리하여 체감 속도 향상.
  */
 
 const BATCH_SIZE = 20;
 const CONTEXT_WINDOW = 3;
+const CONCURRENCY = 3;
 const DEBUG_LOG_MAX = 50;
 
 let client: AgentClient | null = null;
 let translatingVideoId: string | null = null;
+let currentProgress: TranslationProgress | null = null;
 const debugLog: DebugEntry[] = [];
 
 chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }, () => {
@@ -26,6 +29,7 @@ chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }, () =>
 function appendDebugEntry(entry: DebugEntry): void {
   debugLog.push(entry);
   if (debugLog.length > DEBUG_LOG_MAX) debugLog.shift();
+  chrome.runtime.sendMessage({ type: "DEBUG_LOG_PUSH", entry } as ExtensionMessage).catch(() => {});
 }
 
 function dbg(msg: string): void {
@@ -100,7 +104,8 @@ function reorderBatches(
       startSegIdx = i;
       break;
     }
-    startSegIdx = i;
+    // If all segments are before currentTimeMs, startSegIdx stays 0
+    // (start from beginning — user is past everything)
   }
 
   const startBatch = Math.floor(startSegIdx / BATCH_SIZE);
@@ -139,70 +144,133 @@ async function runBatchTranslation(
   const translated: TranscriptSegment[] = [];
   const batchOrder = reorderBatches(segments, currentTimeMs);
   const totalBatches = batchOrder.length;
+  const runStartMs = Date.now();
 
-  dbg(`${totalBatches} batches (stream), starting near ${Math.round(currentTimeMs / 1000)}s`);
+  dbg(`${totalBatches} batches (x${Math.min(CONCURRENCY, totalBatches)} parallel), starting near ${Math.round(currentTimeMs / 1000)}s`);
 
-  for (let step = 0; step < totalBatches; step++) {
-    if (translatingVideoId !== videoId) break;
+  let nextStep = 0;
+  let completedBatches = 0;
+  let totalTokens = 0;
+  let totalElapsedMs = 0;
 
-    const batchIdx = batchOrder[step]!;
-    const start = batchIdx * BATCH_SIZE;
-    const batch = segments.slice(start, start + BATCH_SIZE);
-    const contextBefore = translated.slice(-CONTEXT_WINDOW);
+  function countTranslated(): number {
+    let n = 0;
+    for (const s of segments) if (s.translated) n++;
+    return n;
+  }
 
-    let streamedCount = 0;
+  function buildProgress(isComplete: boolean): TranslationProgress {
+    return {
+      videoId,
+      totalSegments: segments.length,
+      translatedSegments: countTranslated(),
+      completedBatches,
+      totalBatches,
+      totalTokens,
+      wallStartMs: runStartMs,
+      currentTokPerSec: totalElapsedMs > 0 ? totalTokens / (totalElapsedMs / 1000) : 0,
+      isComplete,
+    };
+  }
 
-    try {
-      const result = await agent.translateBatchStream(
-        videoId, batch, "en", targetLang, contextBefore,
-        (index, translatedText) => {
-          const original = segments[index];
-          if (original) original.translated = translatedText;
-          streamedCount++;
+  const processNext = async (): Promise<void> => {
+    while (nextStep < totalBatches) {
+      if (translatingVideoId !== videoId) break;
+      const step = nextStep++;
 
+      const batchIdx = batchOrder[step]!;
+      const start = batchIdx * BATCH_SIZE;
+      const batch = segments.slice(start, start + BATCH_SIZE);
+      // Context is best-effort under parallelism: concurrent workers may not
+      // have each other's results yet. Sentence-level merging compensates.
+      const contextBefore = translated.slice(-CONTEXT_WINDOW);
+
+      let streamedCount = 0;
+
+      try {
+        const result = await agent.translateBatchStream(
+          videoId, batch, "en", targetLang, contextBefore,
+          (index, translatedText) => {
+            const original = segments[index];
+            if (original) original.translated = translatedText;
+            streamedCount++;
+
+            sendToTab(tabId, {
+              type: "TRANSLATION_UPDATE",
+              videoId,
+              segments: [{ index, translated: translatedText }],
+            });
+          }
+        );
+
+        // streaming에서 놓친 segment가 있으면 batch로 전달
+        const unstreamedSegs = result.segments.filter(
+          (seg) => !segments[seg.index]?.translated
+        );
+        if (unstreamedSegs.length > 0) {
+          for (const seg of unstreamedSegs) {
+            const original = segments[seg.index];
+            if (original) original.translated = seg.translated;
+          }
           sendToTab(tabId, {
             type: "TRANSLATION_UPDATE",
             videoId,
-            segments: [{ index, translated: translatedText }],
+            segments: [...unstreamedSegs],
           });
         }
-      );
 
-      // streaming에서 놓친 segment가 있으면 batch로 전달
-      const unstreamedSegs = result.segments.filter(
-        (seg) => !segments[seg.index]?.translated
-      );
-      if (unstreamedSegs.length > 0) {
-        for (const seg of unstreamedSegs) {
+        for (const seg of result.segments) {
           const original = segments[seg.index];
-          if (original) original.translated = seg.translated;
+          if (original) translated.push(original);
         }
-        sendToTab(tabId, {
-          type: "TRANSLATION_UPDATE",
-          videoId,
-          segments: [...unstreamedSegs],
-        });
-      }
 
-      for (const seg of result.segments) {
-        const original = segments[seg.index];
-        if (original) translated.push(original);
-      }
+        completedBatches++;
+        totalTokens += result.tokens ?? 0;
+        totalElapsedMs += result.elapsed_ms ?? 0;
 
-      const tokS = result.elapsed_ms && result.tokens
-        ? `${(result.tokens / (result.elapsed_ms / 1000)).toFixed(1)} tok/s`
-        : "";
-      dbg(
-        `Batch ${step + 1}/${totalBatches} (seg ${start}): ` +
-        `${result.segments.length} segs, ${streamedCount} streamed, ` +
-        `${result.elapsed_ms ?? 0}ms ${tokS}`
-      );
-    } catch (e) {
-      dbg(`Batch ${start} failed: ${e}`);
+        currentProgress = buildProgress(false);
+        chrome.runtime.sendMessage({ type: "PROGRESS_UPDATE", videoId, progress: currentProgress } as ExtensionMessage).catch(() => {});
+
+        const tokS = result.elapsed_ms && result.tokens
+          ? `${(result.tokens / (result.elapsed_ms / 1000)).toFixed(1)} tok/s`
+          : "";
+        dbg(
+          `Batch ${completedBatches}/${totalBatches} (seg ${start}): ` +
+          `${result.segments.length} segs, ${streamedCount} streamed, ` +
+          `${result.elapsed_ms ?? 0}ms ${tokS}`
+        );
+      } catch (e) {
+        completedBatches++;
+        dbg(`Batch ${start} failed: ${e}`);
+      }
     }
-  }
+  };
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(CONCURRENCY, totalBatches) },
+      () => processNext()
+    )
+  );
 
   if (translatingVideoId === videoId) {
+    const wallTimeS = ((Date.now() - runStartMs) / 1000).toFixed(1);
+    const translatedCount = countTranslated();
+    const avgTokS = totalElapsedMs > 0 && totalTokens > 0
+      ? `${(totalTokens / (totalElapsedMs / 1000)).toFixed(1)} tok/s`
+      : "n/a";
+    const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency ?? "?" : "?";
+    dbg(
+      `[Summary] ${translatedCount}/${segments.length} segs, ` +
+      `${completedBatches} batches (x${Math.min(CONCURRENCY, totalBatches)}), ` +
+      `${wallTimeS}s wall, ${avgTokS} avg, ` +
+      `${preparedSettings.provider}/${preparedSettings.model} -> ${targetLang}, ` +
+      `cores:${cores}`
+    );
+
+    currentProgress = buildProgress(true);
+    chrome.runtime.sendMessage({ type: "PROGRESS_UPDATE", videoId, progress: currentProgress } as ExtensionMessage).catch(() => {});
+
     sendToTab(tabId, { type: "TRANSLATION_COMPLETE", videoId });
     broadcastToTabs({ type: "STATUS_UPDATE", status: getConnectionStatus(preparedSettings) });
     translatingVideoId = null;
@@ -230,11 +298,24 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     return true;
   }
 
+  if (message.type === "GET_PROGRESS") {
+    sendResponse({ progress: currentProgress });
+    return true;
+  }
+
   if (message.type === "GET_STATUS") {
     getSettings()
       .then((settings) => sendResponse({ status: translatingVideoId ? "translating" : getConnectionStatus(settings) }))
       .catch(() => sendResponse({ status: "disconnected" }));
     return true;
+  }
+});
+
+// Enable side panel only on YouTube watch pages
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url || changeInfo.status === "complete") {
+    const isYouTube = /youtube\.com\/watch/.test(tab.url ?? "");
+    chrome.sidePanel?.setOptions({ tabId, enabled: isYouTube }).catch(() => {});
   }
 });
 

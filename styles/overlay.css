@@ -62,3 +62,86 @@
   bottom: 40px;
   padding: 0 5%;
 }
+
+/* --- Progress Bar --- */
+
+#masc-progress-container {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 46px;
+  z-index: 58;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+#masc-progress-container.masc-progress-visible {
+  opacity: 1;
+}
+
+#masc-progress-container[data-complete="true"] {
+  animation: masc-progress-fade 6s ease forwards;
+}
+
+@keyframes masc-progress-fade {
+  0%, 70% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.masc-progress-canvas {
+  flex: 1;
+  height: 3px;
+  border-radius: 1.5px;
+  overflow: hidden;
+}
+
+.masc-progress-info {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.6);
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.masc-progress-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #666;
+  flex-shrink: 0;
+}
+
+@keyframes masc-pulse { 50% { opacity: 0.5; } }
+
+.masc-progress-dot.translating {
+  background: #60a5fa;
+  animation: masc-pulse 1s infinite;
+}
+
+.masc-progress-dot.playable,
+.masc-progress-dot.done {
+  background: #4ade80;
+}
+
+/* 전체화면 */
+.ytp-fullscreen #masc-progress-container {
+  bottom: 64px;
+}
+
+/* 미니플레이어 */
+.ytd-miniplayer #masc-progress-container {
+  bottom: 28px;
+  padding: 0 6px;
+}
+.ytd-miniplayer .masc-progress-info {
+  font-size: 9px;
+}

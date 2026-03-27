@@ -1,4 +1,5 @@
 import { SubtitleOverlay } from "./overlay";
+import { ProgressBar } from "./progress-bar";
 import { getCached, setCached } from "./cache";
 import { mergeIntoSentences } from "./sentence-merger";
 import { DEFAULT_SETTINGS } from "./types";
@@ -9,11 +10,13 @@ import type { ExtensionMessage, TranscriptSegment, Settings } from "./types";
  *
  * inject.ts (MAIN world)에서 window.postMessage로 transcript 수신.
  * Background에 번역 요청 → 결과를 overlay에 반영.
+ * ProgressBar로 번역 진행률 시각화.
  */
 
 const LOG = "[AI Subtitle]";
 
 let overlay: SubtitleOverlay | null = null;
+let progressBar: ProgressBar | null = null;
 let currentVideoId: string | null = null;
 let segments: TranscriptSegment[] = [];
 
@@ -55,8 +58,12 @@ window.addEventListener("message", async (event: MessageEvent) => {
   if (!overlay) overlay = new SubtitleOverlay();
   overlay.mount();
 
+  if (!progressBar) progressBar = new ProgressBar();
+  progressBar.mount();
+
   const settings = await loadSettings();
   overlay.configure(settings);
+  progressBar.setTargetLang(settings.targetLang);
 
   // 캐시 확인
   const cached = await getCached(videoId, settings.targetLang);
@@ -64,10 +71,13 @@ window.addEventListener("message", async (event: MessageEvent) => {
     console.log(`${LOG} Cache hit for ${videoId}`);
     segments = cached;
     overlay.setSegments(segments);
+    progressBar.setSegments(segments);
+    progressBar.onComplete();
     return;
   }
 
   overlay.setSegments(segments);
+  progressBar.setSegments(segments);
 
   const video = document.querySelector("video.html5-main-video") as HTMLVideoElement | null;
   const currentTimeMs = Math.round((video?.currentTime ?? 0) * 1000);
@@ -106,7 +116,6 @@ async function loadSettings(): Promise<Settings> {
 /** Background → content: 번역 결과 수신. */
 chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
   if (message.type === "TRANSLATION_UPDATE" && message.videoId === currentVideoId) {
-    console.log(`${LOG} Translation update: ${message.segments.length} segments`);
     for (const seg of message.segments) {
       const target = segments[seg.index];
       if (target) {
@@ -114,10 +123,12 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
       }
       overlay?.updateTranslation(seg.index, seg.translated);
     }
+    progressBar?.onTranslationUpdate();
   }
 
   if (message.type === "TRANSLATION_COMPLETE" && message.videoId === currentVideoId) {
     console.log(`${LOG} Translation complete`);
+    progressBar?.onComplete();
     loadSettings().then((settings) => {
       setCached(currentVideoId!, settings.targetLang, segments).catch(console.error);
     });
@@ -135,18 +146,22 @@ chrome.storage.onChanged.addListener((changes) => {
   if (changes["targetLang"] && currentVideoId && segments.length > 0) {
     const newLang = changes["targetLang"].newValue as string;
     console.log(`${LOG} Language changed to ${newLang}`);
+    progressBar?.setTargetLang(newLang);
 
     getCached(currentVideoId, newLang).then((cached) => {
       if (cached) {
         console.log(`${LOG} Cache hit for ${newLang} — instant load`);
         segments = cached;
         overlay?.setSegments(segments);
+        progressBar?.setSegments(segments);
+        progressBar?.onComplete();
         return;
       }
 
       console.log(`${LOG} No cache for ${newLang}, translating...`);
       for (const seg of segments) seg.translated = undefined;
       overlay?.setSegments(segments);
+      progressBar?.setSegments(segments);
 
       const video = document.querySelector("video.html5-main-video") as HTMLVideoElement | null;
       chrome.runtime.sendMessage({
