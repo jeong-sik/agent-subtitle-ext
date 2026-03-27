@@ -71,7 +71,9 @@ export function normalizeSettings(settings: Settings): Settings {
     agentUrl: settings.agentUrl?.trim() || def.defaultUrl,
     oauthClientId: settings.oauthClientId?.trim() || "",
     googleProjectId: settings.googleProjectId?.trim() || "",
-    oauthSession: settings.oauthSession ?? null,
+    oauthSession: provider === "gemini" && authMode === "oauth"
+      ? settings.oauthSession ?? null
+      : null,
   };
 }
 

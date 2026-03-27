@@ -3,6 +3,7 @@ import type { OAuthSession } from "./types";
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
+const GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 const EXPIRY_SKEW_MS = 60_000;
 const GEMINI_SCOPES = [
   "openid",
@@ -174,58 +175,13 @@ async function runPkceFlow(clientId: string, interactive: boolean): Promise<OAut
   return populateEmail(buildSession(payload));
 }
 
-async function runImplicitFlow(clientId: string, interactive: boolean): Promise<OAuthSession> {
-  const state = randomBase64Url(24);
-  const url = buildGoogleAuthUrl({
-    client_id: clientId,
-    redirect_uri: getRedirectUri(),
-    response_type: "token",
-    scope: GEMINI_SCOPES.join(" "),
-    state,
-    include_granted_scopes: "true",
-    prompt: interactive ? "consent select_account" : "none",
-  });
-
-  const redirect = parseRedirect(await launchWebAuthFlow(url, interactive));
-  const returnedState = redirect.searchParams.get("state");
-  if (returnedState !== state) throw new Error("OAuth state mismatch");
-
-  const accessToken = redirect.searchParams.get("access_token");
-  if (!accessToken) {
-    throw new Error(getErrorMessage({
-      error: redirect.searchParams.get("error") ?? undefined,
-      error_description: redirect.searchParams.get("error_description") ?? undefined,
-    }));
-  }
-
-  const session: OAuthSession = {
-    accessToken,
-    expiresAt: Date.now() + Number(redirect.searchParams.get("expires_in") || "3600") * 1000,
-    scope: redirect.searchParams.get("scope") ?? undefined,
-  };
-
-  return populateEmail(session);
-}
-
-function shouldFallbackToImplicit(error: unknown): boolean {
-  const msg = error instanceof Error ? error.message.toLowerCase() : "";
-  return msg.includes("invalid_client") || msg.includes("unauthorized_client");
-}
-
 export async function connectGeminiOAuth(clientId: string): Promise<OAuthSession> {
   const trimmedClientId = clientId.trim();
   if (!trimmedClientId) {
     throw new Error("Google OAuth client ID is required");
   }
 
-  try {
-    return await runPkceFlow(trimmedClientId, true);
-  } catch (error) {
-    if (!shouldFallbackToImplicit(error)) {
-      throw error;
-    }
-    return runImplicitFlow(trimmedClientId, true);
-  }
+  return runPkceFlow(trimmedClientId, true);
 }
 
 export async function ensureGeminiOAuthSession(
@@ -259,20 +215,27 @@ export async function ensureGeminiOAuthSession(
       }
     }
 
-    try {
-      return await runPkceFlow(trimmedClientId, false);
-    } catch (error) {
-      if (!shouldFallbackToImplicit(error)) {
-        throw error;
-      }
-    }
-
-    return runImplicitFlow(trimmedClientId, false);
+    return runPkceFlow(trimmedClientId, false);
   })();
 
   try {
     return await inFlightSessionRefresh;
   } finally {
     inFlightSessionRefresh = null;
+  }
+}
+
+export async function revokeGeminiOAuthSession(session: OAuthSession | null): Promise<void> {
+  const token = session?.refreshToken || session?.accessToken;
+  if (!token) return;
+
+  try {
+    await fetch(GOOGLE_REVOKE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token }),
+    });
+  } catch {
+    // Best-effort revoke only.
   }
 }

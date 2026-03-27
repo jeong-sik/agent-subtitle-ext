@@ -1,4 +1,4 @@
-import { connectGeminiOAuth } from "./google-oauth";
+import { connectGeminiOAuth, revokeGeminiOAuthSession } from "./google-oauth";
 import { getProvider, normalizeSettings } from "./provider-config";
 import { loadStoredSettings, saveOAuthSession, saveStoredSettings } from "./settings-store";
 import { DEFAULT_SETTINGS } from "./types";
@@ -259,10 +259,12 @@ async function handleGeminiOAuthConnect(): Promise<void> {
 }
 
 async function handleGeminiOAuthDisconnect(): Promise<void> {
+  const previousSession = currentSettings.oauthSession;
   currentSettings = normalizeSettings({
     ...collectSettingsFromForm(),
     oauthSession: null,
   });
+  await revokeGeminiOAuthSession(previousSession);
   await saveStoredSettings(currentSettings);
   await saveOAuthSession(null);
   renderForm(currentSettings);

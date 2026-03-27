@@ -19,6 +19,10 @@ let client: AgentClient | null = null;
 let translatingVideoId: string | null = null;
 const debugLog: DebugEntry[] = [];
 
+chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }, () => {
+  void chrome.runtime.lastError;
+});
+
 function appendDebugEntry(entry: DebugEntry): void {
   debugLog.push(entry);
   if (debugLog.length > DEBUG_LOG_MAX) debugLog.shift();
