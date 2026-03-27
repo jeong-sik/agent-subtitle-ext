@@ -3,7 +3,7 @@
   "name": "AI Subtitle Translator",
   "version": "0.8.0",
   "description": "YouTube AI subtitle translation via OpenAI, Gemini, Claude, or any OpenAI-compatible agent",
-  "permissions": ["storage", "activeTab", "identity"],
+  "permissions": ["storage", "activeTab", "identity", "permissions"],
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://youtube.com/*",
@@ -12,6 +12,11 @@
     "https://accounts.google.com/*",
     "https://oauth2.googleapis.com/*",
     "https://www.googleapis.com/*",
+    "https://api.openai.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.anthropic.com/*"
+  ],
+  "optional_host_permissions": [
     "https://*/*"
   ],
   "background": {

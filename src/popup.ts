@@ -102,6 +102,35 @@ function setValue(id: string, value: string): void {
   if (input) input.value = value;
 }
 
+function getCustomOriginPattern(rawUrl: string): string | null {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "https:") return null;
+    return `${parsed.origin}/*`;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureCustomOriginPermission(settings: Settings): Promise<void> {
+  if (settings.provider !== "custom") return;
+
+  const originPattern = getCustomOriginPattern(settings.agentUrl);
+  if (!originPattern) return;
+
+  const alreadyGranted = await new Promise<boolean>((resolve) => {
+    chrome.permissions.contains({ origins: [originPattern] }, resolve);
+  });
+  if (alreadyGranted) return;
+
+  const granted = await new Promise<boolean>((resolve) => {
+    chrome.permissions.request({ origins: [originPattern] }, resolve);
+  });
+  if (!granted) {
+    throw new Error(`Permission denied for ${originPattern}`);
+  }
+}
+
 function formatExpiry(expiresAt: number): string {
   const diffMs = expiresAt - Date.now();
   if (diffMs <= 0) return "expired";
@@ -211,7 +240,19 @@ function collectSettingsFromForm(): Settings {
 }
 
 async function persistForm(): Promise<void> {
-  currentSettings = collectSettingsFromForm();
+  const nextSettings = collectSettingsFromForm();
+  try {
+    await ensureCustomOriginPermission(nextSettings);
+  } catch (error) {
+    const help = $("provider-help");
+    if (help) {
+      help.textContent = error instanceof Error ? error.message : "Custom endpoint permission request failed.";
+    }
+    renderForm(currentSettings);
+    return;
+  }
+
+  currentSettings = nextSettings;
   await saveStoredSettings(currentSettings);
   renderForm(currentSettings);
 }

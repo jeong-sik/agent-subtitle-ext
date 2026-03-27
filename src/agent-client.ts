@@ -22,6 +22,10 @@ function tryParseSegmentLine(line: string): { index: number; translated: string 
   return { index: parseInt(match[1], 10), translated: match[2].trim() };
 }
 
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
 export class AgentClient {
   private settings: Settings;
 
@@ -116,6 +120,7 @@ export class AgentClient {
   }
 
   private buildOpenAIHeaders(): Record<string, string> {
+    this.assertSecureCustomEndpoint();
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (this.settings.provider === "gemini" && this.settings.authMode === "oauth") {
       const accessToken = this.settings.oauthSession?.accessToken;
@@ -144,6 +149,19 @@ export class AgentClient {
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01",
     };
+  }
+
+  private assertSecureCustomEndpoint(): void {
+    if (this.settings.provider !== "custom" || !this.settings.apiKey.trim()) {
+      return;
+    }
+
+    const url = new URL(getResolvedBaseUrl(this.settings));
+    if (url.protocol === "https:" || isLoopbackHost(url.hostname)) {
+      return;
+    }
+
+    throw new Error("Custom endpoints with credentials must use HTTPS or loopback HTTP.");
   }
 
   private async translateAnthropic(
