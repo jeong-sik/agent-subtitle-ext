@@ -33,7 +33,20 @@ export interface OAuthSession {
   scope?: string;
 }
 
-/** Extension internal messages between content script and background. */
+/** Real-time translation progress for side panel. */
+export interface TranslationProgress {
+  readonly videoId: string;
+  readonly totalSegments: number;
+  readonly translatedSegments: number;
+  readonly completedBatches: number;
+  readonly totalBatches: number;
+  readonly totalTokens: number;
+  readonly wallStartMs: number;
+  readonly currentTokPerSec: number;
+  readonly isComplete: boolean;
+}
+
+/** Extension internal messages between content script, background, popup, and side panel. */
 export type ExtensionMessage =
   | { type: "TRANSCRIPT_READY"; videoId: string; segments: TranscriptSegment[]; currentTimeMs?: number }
   | { type: "TRANSLATE_REQUEST"; videoId: string; targetLang: string }
@@ -42,7 +55,10 @@ export type ExtensionMessage =
   | { type: "STATUS_UPDATE"; status: ConnectionStatus }
   | { type: "GET_STATUS" }
   | { type: "DEBUG_LOG"; entry: DebugEntry }
-  | { type: "GET_DEBUG_LOG" };
+  | { type: "GET_DEBUG_LOG" }
+  | { type: "DEBUG_LOG_PUSH"; entry: DebugEntry }
+  | { type: "PROGRESS_UPDATE"; videoId: string; progress: TranslationProgress }
+  | { type: "GET_PROGRESS" };
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "translating";
 

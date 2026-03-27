@@ -2,7 +2,7 @@ import { AgentClient } from "./agent-client";
 import { ensureGeminiOAuthSession } from "./google-oauth";
 import { hasUsableCredential } from "./provider-config";
 import { loadStoredSettings, saveOAuthSession } from "./settings-store";
-import type { DebugEntry, ExtensionMessage, Settings, TranscriptSegment } from "./types";
+import type { DebugEntry, ExtensionMessage, Settings, TranscriptSegment, TranslationProgress } from "./types";
 
 /**
  * Background service worker (Manifest V3).
@@ -19,6 +19,7 @@ const DEBUG_LOG_MAX = 50;
 
 let client: AgentClient | null = null;
 let translatingVideoId: string | null = null;
+let currentProgress: TranslationProgress | null = null;
 const debugLog: DebugEntry[] = [];
 
 chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }, () => {
@@ -28,6 +29,8 @@ chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }, () =>
 function appendDebugEntry(entry: DebugEntry): void {
   debugLog.push(entry);
   if (debugLog.length > DEBUG_LOG_MAX) debugLog.shift();
+  // Push to extension pages (popup/side panel) for real-time updates
+  chrome.runtime.sendMessage({ type: "DEBUG_LOG_PUSH", entry } as ExtensionMessage).catch(() => {});
 }
 
 function dbg(msg: string): void {
@@ -203,6 +206,22 @@ async function runBatchTranslation(
         completedBatches++;
         totalTokens += result.tokens ?? 0;
         totalElapsedMs += result.elapsed_ms ?? 0;
+
+        // Broadcast progress to extension pages (side panel)
+        const translatedCount = segments.filter(s => s.translated).length;
+        currentProgress = {
+          videoId,
+          totalSegments: segments.length,
+          translatedSegments: translatedCount,
+          completedBatches,
+          totalBatches,
+          totalTokens,
+          wallStartMs: runStartMs,
+          currentTokPerSec: totalElapsedMs > 0 ? totalTokens / (totalElapsedMs / 1000) : 0,
+          isComplete: false,
+        };
+        chrome.runtime.sendMessage({ type: "PROGRESS_UPDATE", videoId, progress: currentProgress } as ExtensionMessage).catch(() => {});
+
         const tokS = result.elapsed_ms && result.tokens
           ? `${(result.tokens / (result.elapsed_ms / 1000)).toFixed(1)} tok/s`
           : "";
@@ -240,6 +259,20 @@ async function runBatchTranslation(
       `cores:${cores}`
     );
 
+    // Final progress broadcast
+    currentProgress = {
+      videoId,
+      totalSegments: segments.length,
+      translatedSegments: segments.filter(s => s.translated).length,
+      completedBatches,
+      totalBatches,
+      totalTokens,
+      wallStartMs: runStartMs,
+      currentTokPerSec: totalElapsedMs > 0 ? totalTokens / (totalElapsedMs / 1000) : 0,
+      isComplete: true,
+    };
+    chrome.runtime.sendMessage({ type: "PROGRESS_UPDATE", videoId, progress: currentProgress } as ExtensionMessage).catch(() => {});
+
     sendToTab(tabId, { type: "TRANSLATION_COMPLETE", videoId });
     broadcastToTabs({ type: "STATUS_UPDATE", status: getConnectionStatus(preparedSettings) });
     translatingVideoId = null;
@@ -267,11 +300,24 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     return true;
   }
 
+  if (message.type === "GET_PROGRESS") {
+    sendResponse({ progress: currentProgress });
+    return true;
+  }
+
   if (message.type === "GET_STATUS") {
     getSettings()
       .then((settings) => sendResponse({ status: translatingVideoId ? "translating" : getConnectionStatus(settings) }))
       .catch(() => sendResponse({ status: "disconnected" }));
     return true;
+  }
+});
+
+// Enable side panel only on YouTube watch pages
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url || changeInfo.status === "complete") {
+    const isYouTube = /youtube\.com\/watch/.test(tab.url ?? "");
+    chrome.sidePanel?.setOptions({ tabId, enabled: isYouTube }).catch(() => {});
   }
 });
 
