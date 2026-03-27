@@ -277,6 +277,8 @@ document.addEventListener("yt-navigate-finish", () => {
   capturedSegments = [];
   lastVideoId = "";
   primaryRunDone = false;
+  // Signal content script to reset overlay/progress bar
+  window.postMessage({ type: "__AI_SUBTITLE_RESET__" }, "*");
   setTimeout(() => run().catch(console.error), 1000);
 });
 

@@ -11,14 +11,26 @@ import type { ExtensionMessage, TranscriptSegment, Settings } from "./types";
  * inject.ts (MAIN world)에서 window.postMessage로 transcript 수신.
  * Background에 번역 요청 → 결과를 overlay에 반영.
  * ProgressBar로 번역 진행률 시각화.
+ * SPA 네비게이션 시 상태 초기화.
  */
 
 const LOG = "[AI Subtitle]";
+const WAIT_FOR_PLAYER_TIMEOUT_MS = 10_000;
 
 let overlay: SubtitleOverlay | null = null;
 let progressBar: ProgressBar | null = null;
 let currentVideoId: string | null = null;
 let segments: TranscriptSegment[] = [];
+
+/** SPA 네비게이션 또는 새 영상 전환 시 전체 상태 초기화. */
+function resetState(): void {
+  overlay?.unmount();
+  overlay = null;
+  progressBar?.unmount();
+  progressBar = null;
+  currentVideoId = null;
+  segments = [];
+}
 
 /** inject.ts (MAIN world)에서 postMessage로 보낸 이벤트 수신. */
 window.addEventListener("message", async (event: MessageEvent) => {
@@ -30,6 +42,13 @@ window.addEventListener("message", async (event: MessageEvent) => {
       type: "DEBUG_LOG",
       entry: { ts: Date.now(), msg: `[inject] ${event.data.msg}` },
     } as ExtensionMessage).catch(() => {});
+    return;
+  }
+
+  // SPA navigation reset signal from inject.ts
+  if (event.data?.type === "__AI_SUBTITLE_RESET__") {
+    console.log(`${LOG} SPA navigation detected, resetting state`);
+    resetState();
     return;
   }
 
@@ -48,17 +67,26 @@ window.addEventListener("message", async (event: MessageEvent) => {
     return;
   }
 
+  // Reset if video changed
+  if (currentVideoId && currentVideoId !== videoId) {
+    resetState();
+  }
+
   currentVideoId = videoId;
-  // 문장 단위로 병합: 2731 raw segments → ~800 sentences
   const sentences = mergeIntoSentences(extracted);
   console.log(`${LOG} Merged ${extracted.length} raw → ${sentences.length} sentences`);
   segments = sentences;
 
-  await waitForPlayer();
-  if (!overlay) overlay = new SubtitleOverlay();
+  const playerReady = await waitForPlayer();
+  if (!playerReady) {
+    console.warn(`${LOG} Player not found after ${WAIT_FOR_PLAYER_TIMEOUT_MS}ms, skipping`);
+    return;
+  }
+
+  overlay = new SubtitleOverlay();
   overlay.mount();
 
-  if (!progressBar) progressBar = new ProgressBar();
+  progressBar = new ProgressBar();
   progressBar.mount();
 
   const settings = await loadSettings();
@@ -92,11 +120,16 @@ window.addEventListener("message", async (event: MessageEvent) => {
   });
 });
 
-function waitForPlayer(): Promise<void> {
+function waitForPlayer(): Promise<boolean> {
   return new Promise((resolve) => {
+    const deadline = Date.now() + WAIT_FOR_PLAYER_TIMEOUT_MS;
     const check = (): void => {
       if (document.querySelector("#movie_player video.html5-main-video")) {
-        resolve();
+        resolve(true);
+        return;
+      }
+      if (Date.now() > deadline) {
+        resolve(false);
         return;
       }
       requestAnimationFrame(check);
@@ -137,12 +170,10 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
 
 /** 설정 변경 → overlay 재설정 + 언어 변경 시 재번역. */
 chrome.storage.onChanged.addListener((changes) => {
-  // overlay 설정 즉시 반영
   if (overlay && (changes["showDualSubtitles"] || changes["fontSize"] || changes["overlayPosition"])) {
     loadSettings().then((s) => overlay?.configure(s));
   }
 
-  // 언어 변경 시: 캐시 있으면 즉시 로드, 없으면 재번역
   if (changes["targetLang"] && currentVideoId && segments.length > 0) {
     const newLang = changes["targetLang"].newValue as string;
     console.log(`${LOG} Language changed to ${newLang}`);

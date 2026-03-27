@@ -126,6 +126,7 @@ export function refreshDebugLog(): void {
 }
 
 const DEBUG_LOG_MAX_UI = 50;
+let debugEntryCount = 0;
 
 /** Append a single entry to the visible debug log (push model). Trims to DEBUG_LOG_MAX_UI. */
 export function appendDebugEntryToUI(entry: DebugEntry): void {
@@ -137,10 +138,11 @@ export function appendDebugEntryToUI(entry: DebugEntry): void {
   const line = `<span class="ts">${formatTime(entry.ts)}</span> ${colorizeMsg(entry.msg)}`;
   logEl.insertAdjacentHTML("beforeend", (logEl.hasChildNodes() ? "\n" : "") + line);
 
-  // Trim oldest lines to prevent unbounded DOM growth
-  const lines = logEl.innerHTML.split("\n");
-  if (lines.length > DEBUG_LOG_MAX_UI) {
-    logEl.innerHTML = lines.slice(-DEBUG_LOG_MAX_UI).join("\n");
+  // Trim by re-fetching the full log from background (avoids innerHTML.split corruption)
+  debugEntryCount++;
+  if (debugEntryCount > DEBUG_LOG_MAX_UI * 2) {
+    debugEntryCount = 0;
+    refreshDebugLog();
   }
 
   const panel = $("debug-panel");

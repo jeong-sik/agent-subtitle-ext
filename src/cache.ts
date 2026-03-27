@@ -24,7 +24,10 @@ function cacheKey(videoId: string, targetLang: string): string {
   return `${videoId}:${targetLang}`;
 }
 
+let dbInstance: IDBDatabase | null = null;
+
 function openDb(): Promise<IDBDatabase> {
+  if (dbInstance) return Promise.resolve(dbInstance);
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
@@ -37,7 +40,11 @@ function openDb(): Promise<IDBDatabase> {
       }
     };
 
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      dbInstance = request.result;
+      dbInstance.onclose = () => { dbInstance = null; };
+      resolve(dbInstance);
+    };
     request.onerror = () => reject(request.error);
   });
 }
