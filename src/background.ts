@@ -15,8 +15,14 @@ import type { DebugEntry, ExtensionMessage, Settings, TranscriptSegment, Transla
 
 const BATCH_SIZE = 10;
 const CONTEXT_WINDOW = 3;
-const CONCURRENCY = 1;
 const DEBUG_LOG_MAX = 50;
+
+/** Cloud APIs handle parallel requests; local LLM (localhost/127.0.0.1) does not. */
+function getConcurrency(settings: Settings): number {
+  const url = settings.agentUrl?.toLowerCase() ?? "";
+  const isLocal = url.includes("localhost") || url.includes("127.0.0.1");
+  return isLocal ? 1 : 3;
+}
 
 let client: AgentClient | null = null;
 let translatingVideoId: string | null = null;
@@ -248,7 +254,8 @@ async function runBatchTranslation(
   const totalBatches = batchOrder.length;
   const runStartMs = Date.now();
 
-  dbg(`${totalBatches} batches (x${Math.min(CONCURRENCY, totalBatches)} parallel), starting near ${Math.round(currentTimeMs / 1000)}s`);
+  const concurrency = getConcurrency(preparedSettings);
+  dbg(`${totalBatches} batches (x${Math.min(concurrency, totalBatches)} parallel), starting near ${Math.round(currentTimeMs / 1000)}s`);
 
   let nextStep = 0;
   let completedBatches = 0;
@@ -350,7 +357,7 @@ async function runBatchTranslation(
 
   await Promise.all(
     Array.from(
-      { length: Math.min(CONCURRENCY, totalBatches) },
+      { length: Math.min(concurrency, totalBatches) },
       () => processNext()
     )
   );
@@ -364,7 +371,7 @@ async function runBatchTranslation(
     const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency ?? "?" : "?";
     dbg(
       `[Summary] ${translatedCount}/${segments.length} segs, ` +
-      `${completedBatches} batches (x${Math.min(CONCURRENCY, totalBatches)}), ` +
+      `${completedBatches} batches (x${Math.min(concurrency, totalBatches)}), ` +
       `${wallTimeS}s wall, ${avgTokS} avg, ` +
       `${preparedSettings.provider}/${preparedSettings.model} -> ${targetLang}, ` +
       `cores:${cores}`
