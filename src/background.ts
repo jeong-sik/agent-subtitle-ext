@@ -9,10 +9,12 @@ import type { DebugEntry, ExtensionMessage, Settings, TranscriptSegment } from "
  *
  * Smart batch ordering: 현재 재생 위치 -> 앞(미래) -> 뒤(과거) 순서로 번역.
  * SSE streaming: 줄 단위로 번역 완성 시 즉시 overlay에 전달.
+ * Parallel batches: CONCURRENCY개 batch를 동시 처리하여 체감 속도 향상.
  */
 
 const BATCH_SIZE = 20;
 const CONTEXT_WINDOW = 3;
+const CONCURRENCY = 3;
 const DEBUG_LOG_MAX = 50;
 
 let client: AgentClient | null = null;
@@ -140,67 +142,83 @@ async function runBatchTranslation(
   const batchOrder = reorderBatches(segments, currentTimeMs);
   const totalBatches = batchOrder.length;
 
-  dbg(`${totalBatches} batches (stream), starting near ${Math.round(currentTimeMs / 1000)}s`);
+  dbg(`${totalBatches} batches (x${Math.min(CONCURRENCY, totalBatches)} parallel), starting near ${Math.round(currentTimeMs / 1000)}s`);
 
-  for (let step = 0; step < totalBatches; step++) {
-    if (translatingVideoId !== videoId) break;
+  let nextStep = 0;
+  let completedBatches = 0;
 
-    const batchIdx = batchOrder[step]!;
-    const start = batchIdx * BATCH_SIZE;
-    const batch = segments.slice(start, start + BATCH_SIZE);
-    const contextBefore = translated.slice(-CONTEXT_WINDOW);
+  const processNext = async (): Promise<void> => {
+    while (nextStep < totalBatches) {
+      if (translatingVideoId !== videoId) break;
+      const step = nextStep++;
+      if (step >= totalBatches) break;
 
-    let streamedCount = 0;
+      const batchIdx = batchOrder[step]!;
+      const start = batchIdx * BATCH_SIZE;
+      const batch = segments.slice(start, start + BATCH_SIZE);
+      const contextBefore = translated.slice(-CONTEXT_WINDOW);
 
-    try {
-      const result = await agent.translateBatchStream(
-        videoId, batch, "en", targetLang, contextBefore,
-        (index, translatedText) => {
-          const original = segments[index];
-          if (original) original.translated = translatedText;
-          streamedCount++;
+      let streamedCount = 0;
 
+      try {
+        const result = await agent.translateBatchStream(
+          videoId, batch, "en", targetLang, contextBefore,
+          (index, translatedText) => {
+            const original = segments[index];
+            if (original) original.translated = translatedText;
+            streamedCount++;
+
+            sendToTab(tabId, {
+              type: "TRANSLATION_UPDATE",
+              videoId,
+              segments: [{ index, translated: translatedText }],
+            });
+          }
+        );
+
+        // streaming에서 놓친 segment가 있으면 batch로 전달
+        const unstreamedSegs = result.segments.filter(
+          (seg) => !segments[seg.index]?.translated
+        );
+        if (unstreamedSegs.length > 0) {
+          for (const seg of unstreamedSegs) {
+            const original = segments[seg.index];
+            if (original) original.translated = seg.translated;
+          }
           sendToTab(tabId, {
             type: "TRANSLATION_UPDATE",
             videoId,
-            segments: [{ index, translated: translatedText }],
+            segments: [...unstreamedSegs],
           });
         }
-      );
 
-      // streaming에서 놓친 segment가 있으면 batch로 전달
-      const unstreamedSegs = result.segments.filter(
-        (seg) => !segments[seg.index]?.translated
-      );
-      if (unstreamedSegs.length > 0) {
-        for (const seg of unstreamedSegs) {
+        for (const seg of result.segments) {
           const original = segments[seg.index];
-          if (original) original.translated = seg.translated;
+          if (original) translated.push(original);
         }
-        sendToTab(tabId, {
-          type: "TRANSLATION_UPDATE",
-          videoId,
-          segments: [...unstreamedSegs],
-        });
-      }
 
-      for (const seg of result.segments) {
-        const original = segments[seg.index];
-        if (original) translated.push(original);
+        completedBatches++;
+        const tokS = result.elapsed_ms && result.tokens
+          ? `${(result.tokens / (result.elapsed_ms / 1000)).toFixed(1)} tok/s`
+          : "";
+        dbg(
+          `Batch ${completedBatches}/${totalBatches} (seg ${start}): ` +
+          `${result.segments.length} segs, ${streamedCount} streamed, ` +
+          `${result.elapsed_ms ?? 0}ms ${tokS}`
+        );
+      } catch (e) {
+        completedBatches++;
+        dbg(`Batch ${start} failed: ${e}`);
       }
-
-      const tokS = result.elapsed_ms && result.tokens
-        ? `${(result.tokens / (result.elapsed_ms / 1000)).toFixed(1)} tok/s`
-        : "";
-      dbg(
-        `Batch ${step + 1}/${totalBatches} (seg ${start}): ` +
-        `${result.segments.length} segs, ${streamedCount} streamed, ` +
-        `${result.elapsed_ms ?? 0}ms ${tokS}`
-      );
-    } catch (e) {
-      dbg(`Batch ${start} failed: ${e}`);
     }
-  }
+  };
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(CONCURRENCY, totalBatches) },
+      () => processNext()
+    )
+  );
 
   if (translatingVideoId === videoId) {
     sendToTab(tabId, { type: "TRANSLATION_COMPLETE", videoId });
