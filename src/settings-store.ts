@@ -3,10 +3,11 @@ import { DEFAULT_SETTINGS } from "./types";
 import type { OAuthSession, Settings } from "./types";
 
 const OAUTH_SESSION_KEY = "oauthSession";
+const { oauthSession: _ignoredOauthSession, ...LOCAL_DEFAULT_SETTINGS } = DEFAULT_SETTINGS;
 
 export async function loadStoredSettings(): Promise<Settings> {
   const local = await new Promise<Record<string, unknown>>((resolve) => {
-    chrome.storage.local.get(DEFAULT_SETTINGS, resolve);
+    chrome.storage.local.get(LOCAL_DEFAULT_SETTINGS, resolve);
   });
   const session = await new Promise<Record<string, unknown>>((resolve) => {
     chrome.storage.session.get({ [OAUTH_SESSION_KEY]: null }, resolve);
