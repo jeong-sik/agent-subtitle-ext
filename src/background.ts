@@ -1,5 +1,7 @@
 import { AgentClient } from "./agent-client";
-import { DEFAULT_SETTINGS } from "./types";
+import { ensureGeminiOAuthSession } from "./google-oauth";
+import { hasUsableCredential } from "./provider-config";
+import { loadStoredSettings, saveOAuthSession } from "./settings-store";
 import type { DebugEntry, ExtensionMessage, Settings, TranscriptSegment } from "./types";
 
 /**
@@ -17,6 +19,10 @@ let client: AgentClient | null = null;
 let translatingVideoId: string | null = null;
 const debugLog: DebugEntry[] = [];
 
+chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }, () => {
+  void chrome.runtime.lastError;
+});
+
 function appendDebugEntry(entry: DebugEntry): void {
   debugLog.push(entry);
   if (debugLog.length > DEBUG_LOG_MAX) debugLog.shift();
@@ -28,18 +34,38 @@ function dbg(msg: string): void {
 }
 
 function getSettings(): Promise<Settings> {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(DEFAULT_SETTINGS, (result) => {
-      resolve(result as Settings);
-    });
-  });
+  return loadStoredSettings();
 }
 
 function ensureClient(settings: Settings): AgentClient {
   if (!client) {
-    client = new AgentClient(settings.agentUrl, settings.apiKey, settings.model);
+    client = new AgentClient(settings);
+  } else {
+    client.setConfig(settings);
   }
   return client;
+}
+
+async function prepareSettingsForRequest(settings: Settings): Promise<Settings> {
+  if (settings.provider !== "gemini" || settings.authMode !== "oauth") {
+    return settings;
+  }
+
+  const oauthSession = await ensureGeminiOAuthSession(settings.oauthClientId, settings.oauthSession);
+  if (
+    settings.oauthSession?.accessToken === oauthSession.accessToken &&
+    settings.oauthSession?.expiresAt === oauthSession.expiresAt
+  ) {
+    return settings;
+  }
+
+  const updated = { ...settings, oauthSession };
+  await saveOAuthSession(oauthSession);
+  return updated;
+}
+
+function getConnectionStatus(settings: Settings): "connected" | "disconnected" {
+  return hasUsableCredential(settings) ? "connected" : "disconnected";
 }
 
 function broadcastToTabs(message: ExtensionMessage): void {
@@ -95,7 +121,18 @@ async function runBatchTranslation(
   settings: Settings
 ): Promise<void> {
   translatingVideoId = videoId;
-  const agent = ensureClient(settings);
+  let preparedSettings: Settings;
+  try {
+    preparedSettings = await prepareSettingsForRequest(settings);
+  } catch (error) {
+    await saveOAuthSession(null);
+    dbg(`Auth failed: ${error}`);
+    broadcastToTabs({ type: "STATUS_UPDATE", status: "disconnected" });
+    translatingVideoId = null;
+    return;
+  }
+
+  const agent = ensureClient(preparedSettings);
 
   broadcastToTabs({ type: "STATUS_UPDATE", status: "translating" });
 
@@ -167,7 +204,7 @@ async function runBatchTranslation(
 
   if (translatingVideoId === videoId) {
     sendToTab(tabId, { type: "TRANSLATION_COMPLETE", videoId });
-    broadcastToTabs({ type: "STATUS_UPDATE", status: "connected" });
+    broadcastToTabs({ type: "STATUS_UPDATE", status: getConnectionStatus(preparedSettings) });
     translatingVideoId = null;
   }
 }
@@ -177,7 +214,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     dbg(`Transcript: ${message.segments.length} segs for ${message.videoId}`);
     const currentTimeMs = message.currentTimeMs ?? 0;
     getSettings().then((settings) => {
-      dbg(`Agent: ${settings.agentUrl} model=${settings.model} lang=${settings.targetLang}`);
+      dbg(`Agent: ${settings.provider} ${settings.model} -> ${settings.targetLang}`);
       runBatchTranslation(
         sender.tab!.id!, message.videoId, message.segments, settings.targetLang, currentTimeMs, settings
       ).catch(console.error);
@@ -194,15 +231,28 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
   }
 
   if (message.type === "GET_STATUS") {
-    sendResponse({ status: translatingVideoId ? "translating" : "connected" });
+    getSettings()
+      .then((settings) => sendResponse({ status: translatingVideoId ? "translating" : getConnectionStatus(settings) }))
+      .catch(() => sendResponse({ status: "disconnected" }));
     return true;
   }
 });
 
-chrome.storage.onChanged.addListener((changes) => {
-  if (changes["agentUrl"] || changes["apiKey"] || changes["model"]) {
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local" && areaName !== "session") {
+    return;
+  }
+  if (
+    changes["agentUrl"] ||
+    changes["apiKey"] ||
+    changes["model"] ||
+    changes["provider"] ||
+    changes["authMode"] ||
+    changes["oauthSession"] ||
+    changes["googleProjectId"]
+  ) {
     getSettings().then((s) => {
-      if (client) client.setConfig(s.agentUrl, s.apiKey, s.model);
+      if (client) client.setConfig(s);
     });
   }
 });

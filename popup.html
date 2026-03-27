@@ -5,7 +5,7 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      width: 360px;
+      width: 390px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       font-size: 13px;
       color: #e0e0e0;
@@ -92,6 +92,39 @@
     .field + .field {
       margin-top: 10px;
     }
+    .help-text {
+      margin-top: 6px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #94a3b8;
+    }
+    .button-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .btn {
+      flex: 1;
+      padding: 8px 10px;
+      border: 1px solid #1a1a4e;
+      border-radius: 4px;
+      background: #0f3460;
+      color: #e0e0e0;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .btn:hover { border-color: #3b82f6; }
+    .btn.secondary { background: #111827; }
+    .btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .oauth-status {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #cbd5e1;
+      line-height: 1.5;
+    }
 
     /* Debug panel */
     .debug-toggle {
@@ -150,12 +183,46 @@
   <form id="settings-form">
     <div class="section">
       <div class="field">
-        <label for="ws-url">Agent URL</label>
-        <input type="text" id="ws-url" value="http://127.0.0.1:8085" placeholder="http://127.0.0.1:8085">
+        <label for="provider">Provider</label>
+        <select id="provider">
+          <option value="custom">Custom / Local</option>
+          <option value="openai">OpenAI</option>
+          <option value="gemini">Gemini</option>
+          <option value="claude">Claude</option>
+        </select>
       </div>
       <div class="field">
+        <label for="auth-mode">Auth</label>
+        <select id="auth-mode">
+          <option value="apiKey">API Key</option>
+          <option value="oauth">OAuth</option>
+        </select>
+        <div class="help-text" id="provider-help"></div>
+      </div>
+      <div class="field">
+        <label for="ws-url">Endpoint</label>
+        <input type="text" id="ws-url" value="http://127.0.0.1:8085" placeholder="http://127.0.0.1:8085">
+      </div>
+      <div class="field" id="api-key-group">
         <label for="api-key">API Key (optional)</label>
         <input type="text" id="api-key" value="" placeholder="sk-... (cloud only)">
+      </div>
+      <div class="field" id="oauth-panel" style="display: none;">
+        <label for="oauth-client-id">Google OAuth Client ID</label>
+        <input type="text" id="oauth-client-id" value="" placeholder="...apps.googleusercontent.com">
+        <div class="field">
+          <label for="google-project-id">Google Cloud Project ID</label>
+          <input type="text" id="google-project-id" value="" placeholder="my-gemini-project">
+        </div>
+        <div class="field">
+          <label for="oauth-redirect-uri">Redirect URI</label>
+          <input type="text" id="oauth-redirect-uri" value="" readonly>
+        </div>
+        <div class="button-row">
+          <button type="button" class="btn" id="oauth-connect-btn">Connect Google OAuth</button>
+          <button type="button" class="btn secondary" id="oauth-disconnect-btn">Disconnect</button>
+        </div>
+        <div class="oauth-status" id="oauth-status">Not connected</div>
       </div>
       <div class="field">
         <label for="model">Model</label>
