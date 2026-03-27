@@ -125,7 +125,9 @@ export function refreshDebugLog(): void {
   });
 }
 
-/** Append a single entry to the visible debug log (push model). */
+const DEBUG_LOG_MAX_UI = 50;
+
+/** Append a single entry to the visible debug log (push model). Trims to DEBUG_LOG_MAX_UI. */
 export function appendDebugEntryToUI(entry: DebugEntry): void {
   const logEl = $("debug-log");
   const emptyEl = $("debug-empty");
@@ -134,6 +136,12 @@ export function appendDebugEntryToUI(entry: DebugEntry): void {
   if (emptyEl) emptyEl.style.display = "none";
   const line = `<span class="ts">${formatTime(entry.ts)}</span> ${colorizeMsg(entry.msg)}`;
   logEl.insertAdjacentHTML("beforeend", (logEl.hasChildNodes() ? "\n" : "") + line);
+
+  // Trim oldest lines to prevent unbounded DOM growth
+  const lines = logEl.innerHTML.split("\n");
+  if (lines.length > DEBUG_LOG_MAX_UI) {
+    logEl.innerHTML = lines.slice(-DEBUG_LOG_MAX_UI).join("\n");
+  }
 
   const panel = $("debug-panel");
   if (panel) panel.scrollTop = panel.scrollHeight;
@@ -375,5 +383,12 @@ export async function initSharedUI(): Promise<void> {
 
   $("oauth-disconnect-btn")?.addEventListener("click", () => {
     handleGeminiOAuthDisconnect().catch(console.error);
+  });
+
+  // Shared STATUS_UPDATE listener (popup + side panel both need this)
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message.type === "STATUS_UPDATE") {
+      updateStatusDisplay(message.status as ConnectionStatus);
+    }
   });
 }

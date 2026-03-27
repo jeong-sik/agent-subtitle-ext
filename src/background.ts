@@ -29,7 +29,6 @@ chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }, () =>
 function appendDebugEntry(entry: DebugEntry): void {
   debugLog.push(entry);
   if (debugLog.length > DEBUG_LOG_MAX) debugLog.shift();
-  // Push to extension pages (popup/side panel) for real-time updates
   chrome.runtime.sendMessage({ type: "DEBUG_LOG_PUSH", entry } as ExtensionMessage).catch(() => {});
 }
 
@@ -154,11 +153,30 @@ async function runBatchTranslation(
   let totalTokens = 0;
   let totalElapsedMs = 0;
 
+  function countTranslated(): number {
+    let n = 0;
+    for (const s of segments) if (s.translated) n++;
+    return n;
+  }
+
+  function buildProgress(isComplete: boolean): TranslationProgress {
+    return {
+      videoId,
+      totalSegments: segments.length,
+      translatedSegments: countTranslated(),
+      completedBatches,
+      totalBatches,
+      totalTokens,
+      wallStartMs: runStartMs,
+      currentTokPerSec: totalElapsedMs > 0 ? totalTokens / (totalElapsedMs / 1000) : 0,
+      isComplete,
+    };
+  }
+
   const processNext = async (): Promise<void> => {
     while (nextStep < totalBatches) {
       if (translatingVideoId !== videoId) break;
       const step = nextStep++;
-      if (step >= totalBatches) break;
 
       const batchIdx = batchOrder[step]!;
       const start = batchIdx * BATCH_SIZE;
@@ -210,19 +228,7 @@ async function runBatchTranslation(
         totalTokens += result.tokens ?? 0;
         totalElapsedMs += result.elapsed_ms ?? 0;
 
-        // Broadcast progress to extension pages (side panel)
-        const translatedCount = segments.filter(s => s.translated).length;
-        currentProgress = {
-          videoId,
-          totalSegments: segments.length,
-          translatedSegments: translatedCount,
-          completedBatches,
-          totalBatches,
-          totalTokens,
-          wallStartMs: runStartMs,
-          currentTokPerSec: totalElapsedMs > 0 ? totalTokens / (totalElapsedMs / 1000) : 0,
-          isComplete: false,
-        };
+        currentProgress = buildProgress(false);
         chrome.runtime.sendMessage({ type: "PROGRESS_UPDATE", videoId, progress: currentProgress } as ExtensionMessage).catch(() => {});
 
         const tokS = result.elapsed_ms && result.tokens
@@ -249,7 +255,7 @@ async function runBatchTranslation(
 
   if (translatingVideoId === videoId) {
     const wallTimeS = ((Date.now() - runStartMs) / 1000).toFixed(1);
-    const translatedCount = segments.filter(s => s.translated).length;
+    const translatedCount = countTranslated();
     const avgTokS = totalElapsedMs > 0 && totalTokens > 0
       ? `${(totalTokens / (totalElapsedMs / 1000)).toFixed(1)} tok/s`
       : "n/a";
@@ -262,18 +268,7 @@ async function runBatchTranslation(
       `cores:${cores}`
     );
 
-    // Final progress broadcast
-    currentProgress = {
-      videoId,
-      totalSegments: segments.length,
-      translatedSegments: segments.filter(s => s.translated).length,
-      completedBatches,
-      totalBatches,
-      totalTokens,
-      wallStartMs: runStartMs,
-      currentTokPerSec: totalElapsedMs > 0 ? totalTokens / (totalElapsedMs / 1000) : 0,
-      isComplete: true,
-    };
+    currentProgress = buildProgress(true);
     chrome.runtime.sendMessage({ type: "PROGRESS_UPDATE", videoId, progress: currentProgress } as ExtensionMessage).catch(() => {});
 
     sendToTab(tabId, { type: "TRANSLATION_COMPLETE", videoId });

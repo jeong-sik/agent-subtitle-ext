@@ -1,11 +1,10 @@
 import {
   $,
   initSharedUI,
-  updateStatusDisplay,
   refreshDebugLog,
   appendDebugEntryToUI,
 } from "./ui-shared";
-import type { ConnectionStatus, DebugEntry, TranslationProgress } from "./types";
+import type { DebugEntry, TranslationProgress } from "./types";
 
 /**
  * Side panel entry point.
@@ -70,12 +69,8 @@ function updateWallTime(): void {
   }
 }
 
-// Real-time message listener
+// Side-panel-specific message listener (STATUS_UPDATE handled by initSharedUI)
 chrome.runtime.onMessage.addListener((message) => {
-  if (message.type === "STATUS_UPDATE") {
-    updateStatusDisplay(message.status as ConnectionStatus);
-  }
-
   if (message.type === "PROGRESS_UPDATE") {
     renderProgress(message.progress as TranslationProgress);
   }

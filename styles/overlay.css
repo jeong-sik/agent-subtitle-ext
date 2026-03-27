@@ -127,10 +127,7 @@
   animation: masc-pulse 1s infinite;
 }
 
-.masc-progress-dot.playable {
-  background: #4ade80;
-}
-
+.masc-progress-dot.playable,
 .masc-progress-dot.done {
   background: #4ade80;
 }
