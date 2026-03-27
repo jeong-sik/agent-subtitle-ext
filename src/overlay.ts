@@ -167,7 +167,9 @@ export class SubtitleOverlay {
 
     this.container.classList.add("masc-sub-visible");
 
-    if (this.showDual) {
+    const isTranslated = Boolean(seg.translated);
+
+    if (this.showDual && isTranslated) {
       this.originalLine.textContent = seg.text;
       this.originalLine.style.display = "block";
     } else {
@@ -175,6 +177,7 @@ export class SubtitleOverlay {
       this.originalLine.style.display = "none";
     }
 
-    this.translatedLine.textContent = seg.translated ?? seg.text;
+    this.translatedLine.textContent = isTranslated ? seg.translated! : seg.text;
+    this.translatedLine.classList.toggle("masc-sub-untranslated", !isTranslated);
   }
 }

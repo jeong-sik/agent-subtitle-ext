@@ -50,6 +50,13 @@
   font-weight: 500;
 }
 
+.masc-sub-translated.masc-sub-untranslated {
+  color: #666;
+  font-style: italic;
+  font-weight: 400;
+  border-left: 3px solid #f59e0b;
+}
+
 /* YouTube 전체화면 대응 */
 .ytp-fullscreen #masc-subtitle-container {
   bottom: 80px;
