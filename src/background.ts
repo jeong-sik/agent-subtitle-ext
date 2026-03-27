@@ -15,7 +15,7 @@ import type { DebugEntry, ExtensionMessage, Settings, TranscriptSegment, Transla
 
 const BATCH_SIZE = 10;
 const CONTEXT_WINDOW = 3;
-const CONCURRENCY = 3;
+const CONCURRENCY = 1;
 const DEBUG_LOG_MAX = 50;
 
 let client: AgentClient | null = null;
