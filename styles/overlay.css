@@ -57,6 +57,17 @@
   border-left: 3px solid #f59e0b;
 }
 
+.masc-sub-buffering {
+  display: none;
+  padding: 3px 10px;
+  border-radius: 4px;
+  background: rgba(59, 130, 246, 0.8);
+  color: #fff;
+  font-size: 0.75em;
+  font-weight: 500;
+  animation: masc-pulse 1.5s infinite;
+}
+
 /* YouTube 전체화면 대응 */
 .ytp-fullscreen #masc-subtitle-container {
   bottom: 80px;
