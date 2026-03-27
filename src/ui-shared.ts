@@ -234,7 +234,18 @@ export function renderForm(settings: Settings): void {
     currentSettings = { ...settings, authMode };
   }
 
-  if (help) help.textContent = provider.authHelpText;
+  const isBuiltin = settings.provider === "chrome-builtin";
+
+  if (help) help.textContent = isBuiltin ? "No configuration needed. Uses Chrome on-device AI." : provider.authHelpText;
+
+  // Hide endpoint/apiKey/model/auth for chrome-builtin (no config needed)
+  const urlField = urlInput?.closest(".field") as HTMLElement | null;
+  const modelField = modelInput?.closest(".field") as HTMLElement | null;
+  const authField = $("auth-mode")?.closest(".field") as HTMLElement | null;
+  if (urlField) urlField.style.display = isBuiltin ? "none" : "";
+  if (modelField) modelField.style.display = isBuiltin ? "none" : "";
+  if (authField) authField.style.display = isBuiltin ? "none" : "";
+
   if (urlInput) {
     urlInput.value = settings.provider === "custom" ? settings.agentUrl : provider.defaultUrl;
     urlInput.placeholder = provider.defaultUrl;
@@ -250,7 +261,7 @@ export function renderForm(settings: Settings): void {
   if (modelInput) modelInput.placeholder = provider.modelPlaceholder;
 
   const oauthEnabled = settings.provider === "gemini" && authMode === "oauth";
-  if (apiKeyGroup) apiKeyGroup.style.display = authMode === "apiKey" ? "block" : "none";
+  if (apiKeyGroup) apiKeyGroup.style.display = isBuiltin ? "none" : (authMode === "apiKey" ? "block" : "none");
   if (oauthPanel) oauthPanel.style.display = oauthEnabled ? "block" : "none";
   if (oauthClientIdInput) oauthClientIdInput.value = settings.oauthClientId;
   if (googleProjectIdInput) googleProjectIdInput.value = settings.googleProjectId;
