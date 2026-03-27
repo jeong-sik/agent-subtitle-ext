@@ -1,10 +1,11 @@
-import type { TranscriptSegment, TranslateResponse } from "./types";
+import { getProvider, getResolvedBaseUrl, normalizeSettings } from "./provider-config";
+import type { Settings, TranscriptSegment, TranslateResponse } from "./types";
 
 /**
- * OpenAI-compatible agent client.
+ * Provider-aware translation client.
  *
- * /v1/chat/completions 를 말하는 아무 백엔드에 번역을 요청한다.
- * llama-server, OpenAI, MASC proxy, OAS — 전부 동작.
+ * OpenAI-compatible endpoints (custom/OpenAI/Gemini) and Anthropic Messages API
+ * are supported.
  *
  * SSE stream으로 토큰 단위 수신, 줄 완성 시 즉시 콜백.
  * 서버가 streaming을 무시하면 JSON fallback으로 자동 전환.
@@ -22,25 +23,20 @@ function tryParseSegmentLine(line: string): { index: number; translated: string 
 }
 
 export class AgentClient {
-  private baseUrl: string;
-  private apiKey: string;
-  private model: string;
+  private settings: Settings;
 
-  constructor(baseUrl: string, apiKey = "", model = "auto") {
-    this.baseUrl = baseUrl.replace(/\/+$/, "");
-    this.apiKey = apiKey;
-    this.model = model;
+  constructor(settings: Settings) {
+    this.settings = normalizeSettings(settings);
   }
 
-  setConfig(baseUrl: string, apiKey = "", model = "auto"): void {
-    this.baseUrl = baseUrl.replace(/\/+$/, "");
-    this.apiKey = apiKey;
-    this.model = model;
+  setConfig(settings: Settings): void {
+    this.settings = normalizeSettings(settings);
   }
 
   async isAvailable(): Promise<boolean> {
+    const baseUrl = getResolvedBaseUrl(this.settings);
     try {
-      const resp = await fetch(`${this.baseUrl}/health`, {
+      const resp = await fetch(`${baseUrl}/health`, {
         signal: AbortSignal.timeout(5000),
       });
       return resp.ok;
@@ -63,18 +59,24 @@ export class AgentClient {
     contextBefore: readonly TranscriptSegment[] | undefined,
     onSegment: OnSegmentTranslated
   ): Promise<TranslateResponse> {
+    const provider = getProvider(this.settings.provider);
+    if (provider.endpointKind === "anthropic") {
+      return this.translateAnthropic(videoId, segments, sourceLang, targetLang, contextBefore, onSegment);
+    }
+
     const prompt = buildPrompt(segments, sourceLang, targetLang, contextBefore);
-    const headers = this.buildHeaders();
+    const headers = this.buildOpenAIHeaders();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     const t0 = Date.now();
+    const baseUrl = getResolvedBaseUrl(this.settings);
 
     try {
-      const resp = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+      const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: "POST",
         headers,
         body: JSON.stringify({
-          model: this.model,
+          model: this.settings.model,
           messages: [{ role: "user", content: prompt }],
           max_tokens: 2048,
           temperature: 0.3,
@@ -113,10 +115,90 @@ export class AgentClient {
     }
   }
 
-  private buildHeaders(): Record<string, string> {
+  private buildOpenAIHeaders(): Record<string, string> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (this.apiKey) headers["Authorization"] = `Bearer ${this.apiKey}`;
+    if (this.settings.provider === "gemini" && this.settings.authMode === "oauth") {
+      const accessToken = this.settings.oauthSession?.accessToken;
+      if (!accessToken) {
+        throw new Error("Gemini OAuth session is missing. Reconnect in the popup.");
+      }
+      headers["Authorization"] = `Bearer ${accessToken}`;
+      if (this.settings.googleProjectId) {
+        headers["x-goog-user-project"] = this.settings.googleProjectId;
+      }
+      return headers;
+    }
+
+    if (this.settings.apiKey) headers["Authorization"] = `Bearer ${this.settings.apiKey}`;
     return headers;
+  }
+
+  private buildAnthropicHeaders(): Record<string, string> {
+    const apiKey = this.settings.apiKey.trim();
+    if (!apiKey) {
+      throw new Error("Claude requires an API key.");
+    }
+
+    return {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    };
+  }
+
+  private async translateAnthropic(
+    videoId: string,
+    segments: readonly TranscriptSegment[],
+    sourceLang: string,
+    targetLang: string,
+    contextBefore: readonly TranscriptSegment[] | undefined,
+    onSegment: OnSegmentTranslated,
+  ): Promise<TranslateResponse> {
+    const prompt = buildPrompt(segments, sourceLang, targetLang, contextBefore);
+    const headers = this.buildAnthropicHeaders();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const t0 = Date.now();
+    const baseUrl = getResolvedBaseUrl(this.settings);
+
+    try {
+      const resp = await fetch(`${baseUrl}/v1/messages`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: this.settings.model,
+          max_tokens: 2048,
+          temperature: 0.3,
+          messages: [{ role: "user", content: prompt }],
+        }),
+        signal: controller.signal,
+      });
+
+      if (!resp.ok) {
+        throw new Error(`Agent ${resp.status}: ${resp.statusText}`);
+      }
+
+      const data = (await resp.json()) as {
+        content?: { type?: string; text?: string }[];
+        usage?: { output_tokens?: number };
+      };
+
+      const content = data.content
+        ?.filter((item) => item.type === "text" && item.text)
+        .map((item) => item.text ?? "")
+        .join("\n") ?? "";
+
+      const result = parseResponse(videoId, segments, content);
+      for (const seg of result.segments) onSegment(seg.index, seg.translated);
+
+      return {
+        ...result,
+        elapsed_ms: Date.now() - t0,
+        tokens: data.usage?.output_tokens ?? 0,
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 }
 

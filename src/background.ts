@@ -1,4 +1,6 @@
 import { AgentClient } from "./agent-client";
+import { ensureGeminiOAuthSession } from "./google-oauth";
+import { hasUsableCredential, normalizeSettings } from "./provider-config";
 import { DEFAULT_SETTINGS } from "./types";
 import type { DebugEntry, ExtensionMessage, Settings, TranscriptSegment } from "./types";
 
@@ -30,16 +32,41 @@ function dbg(msg: string): void {
 function getSettings(): Promise<Settings> {
   return new Promise((resolve) => {
     chrome.storage.local.get(DEFAULT_SETTINGS, (result) => {
-      resolve(result as Settings);
+      resolve(normalizeSettings(result as Settings));
     });
   });
 }
 
 function ensureClient(settings: Settings): AgentClient {
   if (!client) {
-    client = new AgentClient(settings.agentUrl, settings.apiKey, settings.model);
+    client = new AgentClient(settings);
+  } else {
+    client.setConfig(settings);
   }
   return client;
+}
+
+async function prepareSettingsForRequest(settings: Settings): Promise<Settings> {
+  if (settings.provider !== "gemini" || settings.authMode !== "oauth") {
+    return settings;
+  }
+
+  const oauthSession = await ensureGeminiOAuthSession(settings.oauthClientId, settings.oauthSession);
+  if (
+    settings.oauthSession?.accessToken === oauthSession.accessToken &&
+    settings.oauthSession?.expiresAt === oauthSession.expiresAt &&
+    settings.oauthSession?.email === oauthSession.email
+  ) {
+    return settings;
+  }
+
+  const updated = { ...settings, oauthSession };
+  await new Promise<void>((resolve) => chrome.storage.local.set({ oauthSession }, () => resolve()));
+  return updated;
+}
+
+function getConnectionStatus(settings: Settings): "connected" | "disconnected" {
+  return hasUsableCredential(settings) ? "connected" : "disconnected";
 }
 
 function broadcastToTabs(message: ExtensionMessage): void {
@@ -95,7 +122,17 @@ async function runBatchTranslation(
   settings: Settings
 ): Promise<void> {
   translatingVideoId = videoId;
-  const agent = ensureClient(settings);
+  let preparedSettings: Settings;
+  try {
+    preparedSettings = await prepareSettingsForRequest(settings);
+  } catch (error) {
+    dbg(`Auth failed: ${error}`);
+    broadcastToTabs({ type: "STATUS_UPDATE", status: "disconnected" });
+    translatingVideoId = null;
+    return;
+  }
+
+  const agent = ensureClient(preparedSettings);
 
   broadcastToTabs({ type: "STATUS_UPDATE", status: "translating" });
 
@@ -167,7 +204,7 @@ async function runBatchTranslation(
 
   if (translatingVideoId === videoId) {
     sendToTab(tabId, { type: "TRANSLATION_COMPLETE", videoId });
-    broadcastToTabs({ type: "STATUS_UPDATE", status: "connected" });
+    broadcastToTabs({ type: "STATUS_UPDATE", status: getConnectionStatus(preparedSettings) });
     translatingVideoId = null;
   }
 }
@@ -177,7 +214,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     dbg(`Transcript: ${message.segments.length} segs for ${message.videoId}`);
     const currentTimeMs = message.currentTimeMs ?? 0;
     getSettings().then((settings) => {
-      dbg(`Agent: ${settings.agentUrl} model=${settings.model} lang=${settings.targetLang}`);
+      dbg(`Agent: ${settings.provider} ${settings.model} -> ${settings.targetLang}`);
       runBatchTranslation(
         sender.tab!.id!, message.videoId, message.segments, settings.targetLang, currentTimeMs, settings
       ).catch(console.error);
@@ -194,15 +231,25 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
   }
 
   if (message.type === "GET_STATUS") {
-    sendResponse({ status: translatingVideoId ? "translating" : "connected" });
+    getSettings()
+      .then((settings) => sendResponse({ status: translatingVideoId ? "translating" : getConnectionStatus(settings) }))
+      .catch(() => sendResponse({ status: "disconnected" }));
     return true;
   }
 });
 
 chrome.storage.onChanged.addListener((changes) => {
-  if (changes["agentUrl"] || changes["apiKey"] || changes["model"]) {
+  if (
+    changes["agentUrl"] ||
+    changes["apiKey"] ||
+    changes["model"] ||
+    changes["provider"] ||
+    changes["authMode"] ||
+    changes["oauthSession"] ||
+    changes["googleProjectId"]
+  ) {
     getSettings().then((s) => {
-      if (client) client.setConfig(s.agentUrl, s.apiKey, s.model);
+      if (client) client.setConfig(s);
     });
   }
 });

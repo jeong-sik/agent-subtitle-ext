@@ -24,6 +24,17 @@ export interface DebugEntry {
   readonly msg: string;
 }
 
+export type ProviderId = "custom" | "openai" | "gemini" | "claude";
+export type AuthMode = "apiKey" | "oauth";
+
+export interface OAuthSession {
+  accessToken: string;
+  expiresAt: number;
+  refreshToken?: string;
+  email?: string;
+  scope?: string;
+}
+
 /** Extension internal messages between content script and background. */
 export type ExtensionMessage =
   | { type: "TRANSCRIPT_READY"; videoId: string; segments: TranscriptSegment[]; currentTimeMs?: number }
@@ -39,6 +50,8 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "tr
 
 /** Extension settings stored in chrome.storage.local. */
 export interface Settings {
+  provider: ProviderId;
+  authMode: AuthMode;
   agentUrl: string;
   apiKey: string;
   model: string;
@@ -46,10 +59,15 @@ export interface Settings {
   showDualSubtitles: boolean;
   fontSize: number;
   overlayPosition: "bottom" | "top";
+  oauthClientId: string;
+  googleProjectId: string;
+  oauthSession: OAuthSession | null;
   [key: string]: unknown; // chrome.storage compatibility
 }
 
 export const DEFAULT_SETTINGS: Settings = {
+  provider: "custom",
+  authMode: "apiKey",
   agentUrl: "http://127.0.0.1:8085",
   apiKey: "",
   model: "auto",
@@ -57,4 +75,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showDualSubtitles: true,
   fontSize: 18,
   overlayPosition: "bottom",
+  oauthClientId: "",
+  googleProjectId: "",
+  oauthSession: null,
 };
