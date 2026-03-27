@@ -133,7 +133,7 @@ export function appendDebugEntryToUI(entry: DebugEntry): void {
 
   if (emptyEl) emptyEl.style.display = "none";
   const line = `<span class="ts">${formatTime(entry.ts)}</span> ${colorizeMsg(entry.msg)}`;
-  logEl.innerHTML += (logEl.innerHTML ? "\n" : "") + line;
+  logEl.insertAdjacentHTML("beforeend", (logEl.hasChildNodes() ? "\n" : "") + line);
 
   const panel = $("debug-panel");
   if (panel) panel.scrollTop = panel.scrollHeight;

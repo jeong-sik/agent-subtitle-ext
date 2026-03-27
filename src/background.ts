@@ -105,7 +105,8 @@ function reorderBatches(
       startSegIdx = i;
       break;
     }
-    startSegIdx = i;
+    // If all segments are before currentTimeMs, startSegIdx stays 0
+    // (start from beginning — user is past everything)
   }
 
   const startBatch = Math.floor(startSegIdx / BATCH_SIZE);
@@ -162,6 +163,8 @@ async function runBatchTranslation(
       const batchIdx = batchOrder[step]!;
       const start = batchIdx * BATCH_SIZE;
       const batch = segments.slice(start, start + BATCH_SIZE);
+      // Context is best-effort under parallelism: concurrent workers may not
+      // have each other's results yet. Sentence-level merging compensates.
       const contextBefore = translated.slice(-CONTEXT_WINDOW);
 
       let streamedCount = 0;

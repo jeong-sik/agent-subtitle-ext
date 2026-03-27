@@ -120,9 +120,11 @@
   flex-shrink: 0;
 }
 
+@keyframes masc-pulse { 50% { opacity: 0.5; } }
+
 .masc-progress-dot.translating {
   background: #60a5fa;
-  animation: pulse 1s infinite;
+  animation: masc-pulse 1s infinite;
 }
 
 .masc-progress-dot.playable {

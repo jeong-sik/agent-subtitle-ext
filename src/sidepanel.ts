@@ -62,6 +62,12 @@ function updateWallTime(): void {
   wallEl.textContent = currentProgress.isComplete
     ? `${elapsed.toFixed(1)}s (done)`
     : `${elapsed.toFixed(1)}s`;
+
+  // Stop ticking after completion
+  if (currentProgress.isComplete && wallTimerInterval) {
+    clearInterval(wallTimerInterval);
+    wallTimerInterval = null;
+  }
 }
 
 // Real-time message listener
