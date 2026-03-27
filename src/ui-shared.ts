@@ -386,9 +386,17 @@ export async function initSharedUI(): Promise<void> {
   renderForm(currentSettings);
   syncStatus();
 
+  // "change" fires on blur for text inputs; "input" fires on every keystroke
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  const debouncedPersist = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => persistForm().catch(console.error), 400);
+  };
+
   $("settings-form")?.addEventListener("change", () => {
     persistForm().catch(console.error);
   });
+  $("settings-form")?.addEventListener("input", debouncedPersist);
 
   $("oauth-connect-btn")?.addEventListener("click", () => {
     handleGeminiOAuthConnect().catch(console.error);
