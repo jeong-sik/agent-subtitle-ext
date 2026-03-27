@@ -85,6 +85,8 @@ export class AgentClient {
           max_tokens: 2048,
           temperature: 0.3,
           stream: true,
+          // Disable thinking/reasoning for local models (Qwen3.5 etc.)
+          chat_template_kwargs: { enable_thinking: false },
         }),
         signal: controller.signal,
       });
