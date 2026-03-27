@@ -49,7 +49,7 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-/** 캐시에서 번역을 조회한다. */
+/** 캐시에서 번역을 조회한다. 번역이 실제로 채워진 경우만 반환. */
 export async function getCached(
   videoId: string,
   targetLang: string
@@ -62,7 +62,15 @@ export async function getCached(
 
     request.onsuccess = () => {
       const result = request.result as CachedTranslation | undefined;
-      resolve(result?.segments ?? null);
+      const segs = result?.segments;
+      if (!segs?.length) { resolve(null); return; }
+      // Validate: at least 50% of segments must have .translated
+      const translatedCount = segs.filter(s => Boolean(s.translated)).length;
+      if (translatedCount < segs.length * 0.5) {
+        resolve(null);
+        return;
+      }
+      resolve(segs);
     };
     request.onerror = () => reject(request.error);
   });

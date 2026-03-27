@@ -160,11 +160,17 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
   }
 
   if (message.type === "TRANSLATION_COMPLETE" && message.videoId === currentVideoId) {
-    console.log(`${LOG} Translation complete`);
+    const translatedCount = segments.filter(s => Boolean(s.translated)).length;
+    console.log(`${LOG} Translation complete: ${translatedCount}/${segments.length} translated`);
     progressBar?.onComplete();
-    loadSettings().then((settings) => {
-      setCached(currentVideoId!, settings.targetLang, segments).catch(console.error);
-    });
+    // Only cache if sufficient segments are translated
+    if (translatedCount > segments.length * 0.5) {
+      loadSettings().then((settings) => {
+        setCached(currentVideoId!, settings.targetLang, segments).catch(console.error);
+      });
+    } else {
+      console.warn(`${LOG} Skipping cache: only ${translatedCount}/${segments.length} translated`);
+    }
   }
 });
 
