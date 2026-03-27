@@ -3,10 +3,11 @@
  *
  * 전략 (우선순위):
  * 1. ytInitialPlayerResponse → captionTracks[].baseUrl (인증 토큰 내장)
- * 2. player.getOption("captions", "tracklist") → baseUrl
- * 3. XHR/fetch intercept (CC 켜져 있을 때 자동 캡처)
+ * 2. InnerTube POST /youtubei/v1/player → 신선한 captionTracks (SPA에도 안정)
+ * 3. player.getOption("captions", "tracklist") → baseUrl
+ * 4. XHR/fetch intercept (CC 켜져 있을 때 자동 캡처)
  *
- * 1번이 가장 안정적: 별도 API 호출 없이 페이지가 이미 가진 데이터를 읽는다.
+ * 1번이 가장 빠르지만 SPA 네비게이션 후 stale할 수 있어 2번이 핵심 fallback.
  */
 
 const LOG = "[AI Subtitle:inject]";
@@ -126,6 +127,57 @@ async function fetchFromBaseUrl(baseUrl: string): Promise<Segment[]> {
   return parseJson3(text);
 }
 
+// ─── Strategy 2: InnerTube POST ──────────────────────────
+
+/**
+ * YouTube InnerTube API로 직접 player 데이터를 요청.
+ * SPA 네비게이션 후에도 항상 신선한 captionTracks를 반환한다.
+ * MAIN world에서 fetch하므로 YouTube 쿠키가 자동 포함됨.
+ */
+function getClientVersion(): string {
+  try {
+    const w = window as unknown as Record<string, unknown>;
+    const cfg = w["ytcfg"] as { get?: (k: string) => unknown } | undefined;
+    const ver = cfg?.get?.("INNERTUBE_CLIENT_VERSION");
+    if (typeof ver === "string" && ver.length > 0) return ver;
+  } catch { /* ignore */ }
+  return "2.20260101.00.00";
+}
+
+async function fetchViaInnerTube(videoId: string): Promise<CaptionTrack[]> {
+  const clientVersion = getClientVersion();
+  dbg(`InnerTube POST for ${videoId} (client ${clientVersion})`);
+
+  try {
+    const resp = await fetch("https://www.youtube.com/youtubei/v1/player", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        videoId,
+        context: {
+          client: {
+            clientName: "WEB",
+            clientVersion,
+          },
+        },
+      }),
+    });
+
+    if (!resp.ok) {
+      dbg(`InnerTube POST failed: ${resp.status}`);
+      return [];
+    }
+
+    const data = await resp.json() as Record<string, unknown>;
+    const tracks = extractTracks(data);
+    dbg(`InnerTube returned ${tracks.length} caption tracks`);
+    return tracks;
+  } catch (e) {
+    dbg(`InnerTube POST error: ${e}`);
+    return [];
+  }
+}
+
 // ─── JSON3 Parser ────────────────────────────────────────
 
 /**
@@ -174,7 +226,7 @@ function parseJson3(text: string): Segment[] {
   }
 }
 
-// ─── Strategy 3: XHR/Fetch Intercept (Last Resort) ───────
+// ─── Strategy 4: XHR/Fetch Intercept (Last Resort) ───────
 
 /** tlang= 파라미터가 있으면 YouTube 자동번역 → 무시. 원본 자막만 캡처. */
 function isAutoTranslated(url: string): boolean {
@@ -223,6 +275,22 @@ dbg("Intercept installed");
 
 // ─── Main ────────────────────────────────────────────────
 
+/** Pick best track, fetch segments, emit if successful. Returns true on success. */
+async function tryFetchTrack(tracks: CaptionTrack[], videoId: string, label: string): Promise<boolean> {
+  const track = pickTrack(tracks);
+  if (!track) return false;
+
+  dbg(`[${label}] Using track: ${track.languageCode} (${track.kind ?? "manual"})`);
+  const segs = await fetchFromBaseUrl(track.baseUrl);
+  if (segs.length > 0) {
+    emit(videoId, segs);
+    primaryRunDone = true;
+    return true;
+  }
+  dbg(`[${label}] baseUrl returned 0 segments`);
+  return false;
+}
+
 async function run(): Promise<void> {
   const videoId = getVideoId();
   if (!videoId) return;
@@ -236,27 +304,38 @@ async function run(): Promise<void> {
   capturedSegments = [];
   lastVideoId = "";
 
-  // Strategy 1: captionTracks baseUrl (가장 안정적)
+  // Strategy 1: captionTracks from page data (fastest, no network)
   const tracks = getCaptionTracks();
-  dbg(`Found ${tracks.length} caption tracks: ${tracks.map((t) => t.languageCode).join(", ")}`);
+  dbg(`[S1] Found ${tracks.length} caption tracks: ${tracks.map((t) => t.languageCode).join(", ")}`);
 
   if (tracks.length > 0) {
-    const track = pickTrack(tracks);
-    if (track) {
-      dbg(`Using track: ${track.languageCode} (${track.kind ?? "manual"})`);
-      const segs = await fetchFromBaseUrl(track.baseUrl);
-      if (segs.length > 0) {
-        emit(videoId, segs);
-        primaryRunDone = true;
-        return;
-      }
-      dbg(`baseUrl returned 0 segments, trying fallback...`);
-    }
+    const segs = await tryFetchTrack(tracks, videoId, "S1");
+    if (segs) return;
   }
 
-  // Fallback: CC 트리거로 XHR intercept가 잡기를 기대
-  primaryRunDone = true; // intercept 활성화
-  dbg("Triggering CC for XHR intercept fallback...");
+  // Strategy 2: InnerTube POST (SPA-safe, always fresh)
+  const innerTracks = await fetchViaInnerTube(videoId);
+  if (innerTracks.length > 0) {
+    const segs = await tryFetchTrack(innerTracks, videoId, "S2:InnerTube");
+    if (segs) return;
+  }
+
+  // Strategy 3: player.getOption fallback
+  try {
+    const player = document.querySelector("#movie_player") as HTMLElement & {
+      getOption?: (m: string, o: string) => unknown;
+    };
+    const playerTracks = player?.getOption?.("captions", "tracklist") as CaptionTrack[] | undefined;
+    if (playerTracks?.length) {
+      dbg(`[S3] player.getOption returned ${playerTracks.length} tracks`);
+      const segs = await tryFetchTrack(playerTracks, videoId, "S3:getOption");
+      if (segs) return;
+    }
+  } catch { /* ignore */ }
+
+  // Strategy 4: CC trigger for XHR intercept (last resort)
+  primaryRunDone = true;
+  dbg("[S4] Triggering CC for XHR intercept fallback...");
   try {
     const player = document.querySelector("#movie_player") as HTMLElement & {
       loadModule?: (m: string) => void;
