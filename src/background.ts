@@ -303,8 +303,14 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     return true;
   }
 
-  if (message.type === "OPEN_SIDE_PANEL" && sender.tab?.windowId != null) {
-    chrome.sidePanel?.open({ windowId: sender.tab.windowId }).catch(console.error);
+  if (message.type === "OPEN_SIDE_PANEL") {
+    // sender.tab is undefined when message comes from popup (not a tab)
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const windowId = tabs[0]?.windowId;
+      if (windowId != null) {
+        chrome.sidePanel?.open({ windowId }).catch(console.error);
+      }
+    });
   }
 
   if (message.type === "GET_STATUS") {
