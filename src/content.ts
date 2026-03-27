@@ -105,6 +105,7 @@ window.addEventListener("message", async (event: MessageEvent) => {
   }
 
   overlay.setSegments(segments);
+  overlay.setTranslationActive(true);
   progressBar.setSegments(segments);
 
   const video = document.querySelector("video.html5-main-video") as HTMLVideoElement | null;
@@ -162,6 +163,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
   if (message.type === "TRANSLATION_COMPLETE" && message.videoId === currentVideoId) {
     const translatedCount = segments.filter(s => Boolean(s.translated)).length;
     console.log(`${LOG} Translation complete: ${translatedCount}/${segments.length} translated`);
+    overlay?.setTranslationActive(false);
     progressBar?.onComplete();
     // Only cache if sufficient segments are translated
     if (translatedCount > segments.length * 0.5) {

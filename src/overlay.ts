@@ -1,4 +1,4 @@
-import type { TranscriptSegment, Settings, DEFAULT_SETTINGS } from "./types";
+import type { TranscriptSegment, Settings } from "./types";
 
 /**
  * YouTube player 위에 번역 자막을 표시하는 overlay.
@@ -6,31 +6,31 @@ import type { TranscriptSegment, Settings, DEFAULT_SETTINGS } from "./types";
  * - video.currentTime을 감시하여 해당 시간의 segment를 표시
  * - 이중 자막 모드: 원문 + 번역 동시 표시
  * - YouTube 전체화면/미니플레이어에서도 동작
+ * - Auto-pause: 미번역 구간에서 자동 일시정지, 번역 도착 시 자동 재생
  */
 
-const OVERLAY_ID = "masc-subtitle-overlay";
 const CONTAINER_ID = "masc-subtitle-container";
 
 export class SubtitleOverlay {
   private container: HTMLDivElement | null = null;
   private originalLine: HTMLDivElement | null = null;
   private translatedLine: HTMLDivElement | null = null;
+  private bufferingLine: HTMLDivElement | null = null;
   private segments: TranscriptSegment[] = [];
   private video: HTMLVideoElement | null = null;
   private animFrameId: number | null = null;
   private lastIndex = -1;
   private showDual = true;
   private fontSize = 18;
+  private autoPaused = false;
+  private translationActive = false;
 
-  /** overlay를 YouTube player 내부에 생성한다. */
   mount(): boolean {
     const player = document.querySelector("#movie_player");
     const video = document.querySelector<HTMLVideoElement>("video.html5-main-video");
     if (!player || !video) return false;
 
-    // 이미 마운트되어 있으면 제거 후 재생성
     this.unmount();
-
     this.video = video;
 
     this.container = document.createElement("div");
@@ -42,44 +42,55 @@ export class SubtitleOverlay {
     this.translatedLine = document.createElement("div");
     this.translatedLine.className = "masc-sub-translated";
 
+    this.bufferingLine = document.createElement("div");
+    this.bufferingLine.className = "masc-sub-buffering";
+    this.bufferingLine.textContent = "";
+
     this.container.appendChild(this.originalLine);
     this.container.appendChild(this.translatedLine);
+    this.container.appendChild(this.bufferingLine);
     player.appendChild(this.container);
 
     this.startSync();
     return true;
   }
 
-  /** overlay를 제거한다. */
   unmount(): void {
+    this.resumeIfAutoPaused();
     this.stopSync();
     const existing = document.getElementById(CONTAINER_ID);
     existing?.remove();
     this.container = null;
     this.originalLine = null;
     this.translatedLine = null;
+    this.bufferingLine = null;
     this.video = null;
     this.lastIndex = -1;
+    this.autoPaused = false;
   }
 
-  /** 번역된 segment 데이터를 설정한다. */
   setSegments(segments: TranscriptSegment[]): void {
     this.segments = segments;
   }
 
-  /** 특정 segment의 번역을 업데이트한다 (streaming 수신 시). */
+  /** 번역 진행 중 여부 설정. auto-pause는 번역 활성 시에만 동작. */
+  setTranslationActive(active: boolean): void {
+    this.translationActive = active;
+    if (!active) this.resumeIfAutoPaused();
+  }
+
   updateTranslation(index: number, translated: string): void {
     const seg = this.segments[index];
     if (seg) {
       seg.translated = translated;
-      // 현재 표시 중인 segment면 즉시 반영
       if (index === this.lastIndex) {
         this.renderSegment(seg);
+        // 현재 segment가 번역됐으면 auto-resume
+        this.resumeIfAutoPaused();
       }
     }
   }
 
-  /** 표시 설정을 변경한다. */
   configure(settings: Pick<Settings, "showDualSubtitles" | "fontSize" | "overlayPosition">): void {
     this.showDual = settings.showDualSubtitles;
     this.fontSize = settings.fontSize;
@@ -90,7 +101,6 @@ export class SubtitleOverlay {
     }
   }
 
-  /** requestAnimationFrame으로 video.currentTime을 감시한다. */
   private startSync(): void {
     const tick = (): void => {
       if (!this.video) return;
@@ -102,6 +112,13 @@ export class SubtitleOverlay {
         this.lastIndex = segIndex;
         const seg = segIndex >= 0 ? this.segments[segIndex] : undefined;
         this.renderSegment(seg ?? null);
+
+        // Auto-pause: 미번역 segment 진입 시
+        if (seg && !seg.translated && this.translationActive) {
+          this.autoPause();
+        } else if (seg?.translated && this.autoPaused) {
+          this.resumeIfAutoPaused();
+        }
       }
 
       this.animFrameId = requestAnimationFrame(tick);
@@ -117,10 +134,26 @@ export class SubtitleOverlay {
     }
   }
 
-  /**
-   * binary search로 currentTime에 해당하는 segment를 찾는다.
-   * segments는 start_ms 기준 오름차순 정렬 전제.
-   */
+  private autoPause(): void {
+    if (!this.video || this.video.paused || this.autoPaused) return;
+    this.video.pause();
+    this.autoPaused = true;
+    if (this.bufferingLine) {
+      this.bufferingLine.textContent = "Translating...";
+      this.bufferingLine.style.display = "block";
+    }
+  }
+
+  private resumeIfAutoPaused(): void {
+    if (!this.autoPaused || !this.video) return;
+    this.autoPaused = false;
+    this.video.play().catch(() => {});
+    if (this.bufferingLine) {
+      this.bufferingLine.textContent = "";
+      this.bufferingLine.style.display = "none";
+    }
+  }
+
   private findSegmentIndex(currentMs: number): number {
     const segs = this.segments;
     let lo = 0;
@@ -143,7 +176,6 @@ export class SubtitleOverlay {
       }
     }
 
-    // result가 가리키는 segment의 duration 내에 있는지 확인
     if (result >= 0) {
       const seg = segs[result];
       if (seg && currentMs < seg.start_ms + seg.duration_ms) {
@@ -154,7 +186,6 @@ export class SubtitleOverlay {
     return -1;
   }
 
-  /** segment를 overlay에 렌더링한다. */
   private renderSegment(seg: TranscriptSegment | null): void {
     if (!this.originalLine || !this.translatedLine || !this.container) return;
 
