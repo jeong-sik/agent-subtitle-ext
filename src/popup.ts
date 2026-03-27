@@ -17,6 +17,11 @@ document.addEventListener("DOMContentLoaded", () => {
   initSharedUI().then(() => {
     $("debug-toggle")?.addEventListener("click", toggleDebug);
 
+    $("open-sidepanel-btn")?.addEventListener("click", () => {
+      chrome.runtime.sendMessage({ type: "OPEN_SIDE_PANEL" }).catch(console.error);
+      window.close();
+    });
+
     setInterval(() => {
       if (isDebugOpen()) refreshDebugLog();
     }, 2000);

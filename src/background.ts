@@ -303,6 +303,10 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     return true;
   }
 
+  if (message.type === "OPEN_SIDE_PANEL" && sender.tab?.windowId != null) {
+    chrome.sidePanel?.open({ windowId: sender.tab.windowId }).catch(console.error);
+  }
+
   if (message.type === "GET_STATUS") {
     getSettings()
       .then((settings) => sendResponse({ status: translatingVideoId ? "translating" : getConnectionStatus(settings) }))
