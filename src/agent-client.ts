@@ -11,7 +11,7 @@ import type { Settings, TranscriptSegment, TranslateResponse } from "./types";
  * 서버가 streaming을 무시하면 JSON fallback으로 자동 전환.
  */
 
-const REQUEST_TIMEOUT_MS = 120_000;
+const REQUEST_TIMEOUT_MS = 300_000;
 const SEGMENT_LINE_RE = /^\[(\d+)\]\s*(.+)$/;
 
 export type OnSegmentTranslated = (index: number, translated: string) => void;
